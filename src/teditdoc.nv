@@ -1,0 +1,397 @@
+// teditdoc.nv — the document, and the six edits.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE WORKED EXAMPLE THIS PACKAGE WAS BUILT FOR.  `novo pkg add` adds
+// one dependency line to a `novo.toml` and moves nothing else:
+//
+//     let d = teditdoc.parse(text)!
+//     let d2 = teditdoc.insert(d, "dependencies.toml-nv",
+//                              tedititem.string_value("^0.0.3"),
+//                              teditfmt.manifest_policy())!
+//     let out = teditdoc.render(d2)
+//
+// and the claim about it is CHECKABLE rather than asserted:
+//
+//     list.len(teditdoc.edits(d2)) == 1
+//
+// One splice, at one offset, of one string.  Every other byte of the
+// file is a `tedititem.TeditSpan` into the original, so the comments,
+// the alignment, the `[docs.pages]` table and the author's own blank
+// lines are not preserved by care — they are the same bytes.
+//
+// The compiler's own implementation of that edit is 40 lines of
+// line-array scanning in `manifest_insert_dep`, and it is 40 lines
+// because the whole-manifest re-serialiser it replaced deleted
+// `stability = "draft"`, which the next publish requires.  This package
+// is what both of them wanted to be.
+//
+// WHAT A DOCUMENT HOLDS.  The original text, once; a flat list of
+// items, each holding byte ranges into that text; and the splice list
+// of everything an edit changed.  The tree is in the items' `children`
+// indices, which is what keeps a walk over a deeply nested document a
+// walk over one list rather than a chain of pointer loads.
+//
+// EVERY EDIT ANSWERS A NEW DOCUMENT.  `[mutate]` is a host effect and
+// this package is `core`, so nothing is edited in place and the
+// document before an edit is still a document — which is also what
+// makes `edits` meaningful, because the two can be compared.
+//
+// THE ORDER OF THE SPLICE LIST is ascending by offset, and the offsets
+// are into the ORIGINAL text rather than into anything intermediate.
+// A caller applying them itself — an editor that wants to move a
+// cursor, a language server sending a `textDocument/didChange` —
+// applies them back to front and needs no bookkeeping.
+
+use tedititem
+use teditkey
+use teditfmt
+use tediterr
+
+// A TOML document that remembers how it was written.
+//
+// Opaque in the sense that matters: `original` and `items` are fields
+// because a struct needs them and because a caller walking the tree
+// reads them, and `text` is deliberately NOT among them — a document
+// has no rendered form until `render` builds one, which is what stops
+// an implementation from keeping a text and a tree that can disagree.
+pub struct TeditDoc
+    // The text this document was parsed from, kept whole.  Every
+    // `TeditSpan` in the document indexes into it, and it never
+    // changes: an edited document still carries the bytes it started
+    // as, which is what lets `edits` be a list of splices against a
+    // fixed origin.
+    original: Str
+    // Every item of the document, in the order they were parsed.
+    // Index 0 is the root table, which is the file's top level and has
+    // no header of its own.
+    items: [tedititem.TeditItem]
+    // Every splice this document's edits produced, ascending by
+    // offset.  Empty for a freshly parsed document.
+    changes: [TeditSplice]
+
+// One replacement of a run of the original text.
+//
+// `at` and `removed` are offsets and lengths into `TeditDoc.original`,
+// never into a partially rendered result — so the list is applied back
+// to front and needs no offset arithmetic.
+//
+// An insertion is `removed == 0`; a deletion is `inserted == ""`.
+pub struct TeditSplice
+    at: Int
+    removed: Int
+    inserted: Str
+
+// ── Parsing and rendering ────────────────────────────────────────────
+
+// Read text as a TOML document, keeping every byte.
+//
+// Refuses exactly what the specification refuses, which is more than a
+// value-tree parser has to: a document that reopens a table, a dotted
+// key that redefines a table an earlier header defined, a key repeated
+// in one table.  Those are errors in TOML 1.0 and a lenient editor
+// would let a tool write a file its own parser rejects.
+//
+// ```novo
+// use teditdoc
+//
+// fn main() [io]
+//     match teditdoc.parse("# a comment\nport = 8080\n")
+//         Ok(d)  => println("${teditdoc.is_untouched(d)}")
+//         Err(_) => println("not toml")
+// ```
+pub fn parse(text: Str) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.parse")
+
+// Read bytes as a TOML document.
+//
+// TOML is UTF-8 by definition, so a byte sequence that is not valid
+// UTF-8 is `TeditParseFailed` at the offending byte rather than a
+// document with replacement characters in it — a file this package
+// silently repaired would render back different bytes, which is the
+// one thing it promises not to do.
+pub fn parse_bytes(input: Bytes) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.parse_bytes")
+
+// The document as text.
+//
+// For an unedited document this is the input, byte for byte, and
+// `is_untouched` is the assertion.  For an edited one it is the input
+// with the splice list applied.
+pub fn render(d: TeditDoc) -> Str []
+    todo("toml-edit-nv.teditdoc.render")
+
+// The document as bytes.
+pub fn render_bytes(d: TeditDoc) -> Bytes []
+    todo("toml-edit-nv.teditdoc.render_bytes")
+
+// Render into a buffer the caller already has.
+//
+// Appends at `off` and answers the buffer; `render_len` is how big it
+// needs to be.  The shape for a caller writing several documents into
+// one arena without an allocation per document.
+pub fn render_into(out: Bytes, off: Int, d: TeditDoc) -> Bytes []
+    todo("toml-edit-nv.teditdoc.render_into")
+
+// How many bytes `render` would produce.
+//
+// Answered by walking the raws and adding their lengths, so sizing a
+// buffer costs no allocation.
+pub fn render_len(d: TeditDoc) -> Int []
+    todo("toml-edit-nv.teditdoc.render_len")
+
+// Write the document to a sink, and be charged exactly what the sink
+// costs.
+//
+// THE ONE EFFECT-POLYMORPHIC SIGNATURE IN THIS PACKAGE.  `W: Write[e]`
+// binds the standard library's `Write` trait's effect parameter and the
+// clause is `[e]`, so the row means "whatever the impl behind `W`
+// supplies": a file charges the caller `[fs]`, an in-memory buffer
+// charges nothing, and this package stays `core` because it has named
+// no effect of its own (SPEC § 5.6, `docs/publishing.md` § How a
+// `core` package takes a stream from its host).
+//
+// It answers the write error rather than swallowing it, because a
+// manifest half written is worse than one not written at all and the
+// caller is the only party that can do anything about it.
+pub fn render_to<W: Write[e]>(w: W, d: TeditDoc) -> ?IoError [e]
+    todo("toml-edit-nv.teditdoc.render_to")
+
+// Whether nothing has been edited.
+//
+// True exactly when `edits` is empty, which is exactly when `render`
+// answers the input byte for byte.  A tool that only writes the file
+// back when something changed asks this.
+pub fn is_untouched(d: TeditDoc) -> Bool []
+    todo("toml-edit-nv.teditdoc.is_untouched")
+
+// Every splice the edits made, ascending by offset into the original.
+//
+// The list a caller shows as a diff, applies to its own copy of the
+// text, or counts to assert that one edit changed one thing.
+//
+// ```novo
+// use teditdoc
+// use tedititem
+// use teditfmt
+// use std.list
+//
+// fn main() [io]
+//     match teditdoc.parse("[dependencies]\nurl-nv = \"^0.1.1\"\n")
+//         Err(_) => println("not toml")
+//         Ok(d)  =>
+//             match teditdoc.insert(d, "dependencies.toml-nv",
+//                                   tedititem.string_value("^0.0.3"),
+//                                   teditfmt.manifest_policy())
+//                 Err(_) => println("refused")
+//                 Ok(d2) => println("${list.len(teditdoc.edits(d2))}")
+// ```
+pub fn edits(d: TeditDoc) -> [TeditSplice] []
+    todo("toml-edit-nv.teditdoc.edits")
+
+// How many runs of produced bytes a render would emit.
+//
+// The same count as `edits` for every edit this package makes, and the
+// two are separate calls because they answer different questions: this
+// one is about the OUTPUT and that one is about the input, and an
+// implementation that coalesced two adjacent splices would move the
+// two apart.
+pub fn made_count(d: TeditDoc) -> Int []
+    todo("toml-edit-nv.teditdoc.made_count")
+
+// The text a raw stands for, in this document.
+//
+// `tedititem.raw_text` with the document's own source supplied, which
+// is the only source that gives the right answer.
+pub fn raw_str(d: TeditDoc, r: tedititem.TeditRaw) -> Str []
+    todo("toml-edit-nv.teditdoc.raw_str")
+
+// ── Reading ──────────────────────────────────────────────────────────
+
+// The item at a dotted path, or `None`.
+//
+// ```novo
+// use teditdoc
+//
+// fn main() [io]
+//     match teditdoc.parse("port = 8080\n")
+//         Err(_) => println("not toml")
+//         Ok(d)  =>
+//             match teditdoc.get(d, "port")
+//                 Some(_) => println("found")
+//                 None    => println("absent")
+// ```
+pub fn get(d: TeditDoc, path: Str) -> ?tedititem.TeditItem []
+    todo("toml-edit-nv.teditdoc.get")
+
+// Whether a path names an entry.
+pub fn contains(d: TeditDoc, path: Str) -> Bool []
+    todo("toml-edit-nv.teditdoc.contains")
+
+// The index into `items` of the entry a path names, or -1.
+//
+// The form a caller walking children wants, since `children` is a list
+// of indices.
+pub fn index_of(d: TeditDoc, path: Str) -> Int []
+    todo("toml-edit-nv.teditdoc.index_of")
+
+// The item at an index, or `None` when the index is out of range.
+pub fn item_at(d: TeditDoc, index: Int) -> ?tedititem.TeditItem []
+    todo("toml-edit-nv.teditdoc.item_at")
+
+// The keys of the table a path names, in document order.
+//
+// Document order and not sorted, because the order is a fact about the
+// file and sorting it here would make a caller unable to see it.
+pub fn keys_of(d: TeditDoc, path: Str) -> [teditkey.TeditKey] []
+    todo("toml-edit-nv.teditdoc.keys_of")
+
+// Every path in the document, in document order, each as a dotted
+// string.
+//
+// Tables included, so `dependencies` appears before
+// `dependencies.toml-nv`.  What a tool listing a manifest walks.
+pub fn paths(d: TeditDoc) -> [Str] []
+    todo("toml-edit-nv.teditdoc.paths")
+
+// The string at a path, decoded, or `None` when the path names no
+// string.
+//
+// The convenience over `get` plus `tedititem.str_of`, for the call a
+// consumer makes constantly: read one value out of a manifest.
+pub fn str_at(d: TeditDoc, path: Str) -> ?Str []
+    todo("toml-edit-nv.teditdoc.str_at")
+
+// The integer at a path, or `None`.
+pub fn int_at(d: TeditDoc, path: Str) -> ?Int []
+    todo("toml-edit-nv.teditdoc.int_at")
+
+// The boolean at a path, or `None`.
+pub fn bool_at(d: TeditDoc, path: Str) -> ?Bool []
+    todo("toml-edit-nv.teditdoc.bool_at")
+
+// The policy this document's own habits imply.
+//
+// `teditfmt.infer` over the document's text.  The call `novo pkg add`
+// would make if it wanted a new line to match a manifest rather than
+// match the project's convention — which is a choice, and
+// `teditfmt.manifest_policy()` is the other side of it.
+pub fn policy_of(d: TeditDoc) -> teditfmt.TeditPolicy []
+    todo("toml-edit-nv.teditdoc.policy_of")
+
+// Where in the original text an entry's value sits: `[start, end)`.
+//
+// `None` for a path that names nothing.  What a language server
+// highlights and what a diagnostic points at.
+pub fn span_of(d: TeditDoc, path: Str) -> ?(Int, Int) []
+    todo("toml-edit-nv.teditdoc.span_of")
+
+// The 1-based line and column an entry's KEY begins at, or `(0, 0)`.
+//
+// The key and not the value, because that is where a tool refusing a
+// manifest field should point: `novo.toml:13:1` names the entry, and
+// the compiler's own `manifest_key_pos` answers the same thing by
+// scanning lines.
+pub fn position_of(d: TeditDoc, path: Str) -> (Int, Int) []
+    todo("toml-edit-nv.teditdoc.position_of")
+
+// ── Editing ──────────────────────────────────────────────────────────
+//
+// Five calls, and each one is here because a text-splicing editor
+// cannot do it.  `set` is the one that could; the other four are why
+// there is an item model.
+
+// Replace the value at an existing path.
+//
+// Rewrites the value's own bytes and nothing else — the key keeps its
+// spelling, the decor keeps its comments, a trailing comment stays
+// after the new value on the same line.
+//
+// Refuses a path that does not exist, because the caller that meant
+// "set or add" has `upsert` and the caller that meant "change what is
+// there" would rather be told the key it named is not the key in the
+// file.  That asymmetry is the one this package is opinionated about:
+// a typo'd path that silently adds an entry is how a tool writes a
+// manifest field nothing reads.
+pub fn set(d: TeditDoc, path: Str, v: tedititem.TeditNewValue,
+           p: teditfmt.TeditPolicy) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.set")
+
+// Add an entry that is not there.
+//
+// The `novo pkg add` call.  Creates the parent tables the path names if
+// they are absent — `insert(d, "dependencies.toml-nv", …)` on a
+// manifest with no `[dependencies]` writes the header too, at the end
+// of the file, under the policy.
+//
+// Refuses a path that already exists, so a caller adding a dependency
+// twice is told rather than overwriting a version somebody pinned.
+pub fn insert(d: TeditDoc, path: Str, v: tedititem.TeditNewValue,
+              p: teditfmt.TeditPolicy) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.insert")
+
+// Set if present, insert if not.
+//
+// The call for a tool that is describing a desired state rather than a
+// change — a formatter writing a field it always writes, a migration
+// setting a floor.  Named separately from `set` and `insert` so that
+// the two strict calls can stay strict.
+pub fn upsert(d: TeditDoc, path: Str, v: tedititem.TeditNewValue,
+              p: teditfmt.TeditPolicy) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.upsert")
+
+// Remove an entry and the bytes that belonged to it.
+//
+// "Belonged to it" is the decision worth stating: the entry's own line
+// goes, its prefix decor goes with it — the comment written above a
+// key documents that key — and the blank line that separated it from
+// what follows stays, because that blank line belongs to what follows.
+// Removing the last key of a table leaves the table header, since a
+// header with no keys is a legal empty table and deleting it would be
+// a second edit the caller did not ask for.
+pub fn remove(d: TeditDoc, path: Str) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.remove")
+
+// Rename a key, leaving its value, its decor and its position alone.
+//
+// The call a text splicer cannot make cleanly, and the reason is
+// arithmetic: a rename is one splice over the key's own bytes, and
+// finding those bytes in text means re-parsing the line to know where
+// the key ended and the whitespace began.  Over an item model it is a
+// field assignment.
+//
+// The new name is a KEY rather than a string, so the caller decides
+// whether a rename also changes the quoting style; `teditkey.key_auto`
+// is the answer for a caller that does not care.
+pub fn rename(d: TeditDoc, path: Str,
+              to: teditkey.TeditKey) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.rename")
+
+// Change how a table is spelled, between a header and an inline table.
+//
+// The one call that reformats something the caller did not write, and
+// it answers a `Result` because it cannot always be done: an inline
+// table may not contain a header table, so `[a.b.c]` has no inline
+// spelling that keeps `[a.b.d]` where it is.  `TeditWouldChangeShape`
+// is that refusal, and it names both spellings.
+pub fn retype(d: TeditDoc, path: Str, to: teditfmt.TeditTableStyle,
+              p: teditfmt.TeditPolicy) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.retype")
+
+// Attach a comment to an entry, or remove it with the empty string.
+//
+// Above the entry or after it, as the policy's `comment_above` says.
+// Separate from `set` because changing a value and changing the
+// sentence that explains it are two edits and a caller usually makes
+// one of them.
+pub fn set_comment(d: TeditDoc, path: Str, comment: Str,
+                   p: teditfmt.TeditPolicy) -> Result<TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditdoc.set_comment")
+
+// The comment attached to an entry, `#` stripped, or the empty string.
+//
+// The prefix comment when there is one, the trailing comment
+// otherwise — which is what a reader means by "the comment on this
+// key" whichever way the file writes it.
+pub fn comment_at(d: TeditDoc, path: Str) -> Str []
+    todo("toml-edit-nv.teditdoc.comment_at")

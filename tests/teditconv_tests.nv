@@ -1,0 +1,124 @@
+// teditconv_tests.nv — the crossing to toml-nv's value tree, and the
+// one call that earns it.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented` — in this suite from both
+// packages, since toml-nv 0.0.3 is an interface too.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: `apply_value` writes a subtree
+// into a document and produces a diff the size of the DIFFERENCE. A
+// caller that rendered the merged tree instead would have rewritten
+// every byte, and the whole reason this package exists is that the
+// bytes it did not touch are the same bytes.
+
+use std.test
+use std.list
+use std.str
+use teditdoc
+use teditconv
+use teditfmt
+use tomlnode
+use tomlread
+
+fn src() -> Str
+    let lines = ["# the server", "[server]", "host = \"localhost\"  # dev only",
+                 "port = 8080", "", "[logging]", "level = \"info\"", ""]
+    list.join(lines, "\n")
+
+@test
+fn test_a_document_answers_the_data_it_holds() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("to_value gives a tree with no trivia in it")
+    match teditconv.to_value(d)
+        Err(_) => test.assert(false)
+        Ok(v)  => test.assert(tomlnode.len(v) == 2)
+
+    test.case("value_at answers one subtree without building the whole tree")
+    match teditconv.value_at(d, "server")
+        Err(_) => test.assert(false)
+        Ok(v)  => test.assert(tomlnode.len(v) == 2)
+
+    test.case("a path that names nothing is a refusal, not an empty table")
+    match teditconv.value_at(d, "absent")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_apply_value_touches_only_what_differs() [io]
+    let d = teditdoc.parse(src())!
+    let want = tomlread.parse("host = \"localhost\"\nport = 9090\n")!
+
+    test.case("value_diff answers before anything is touched")
+    match teditconv.value_diff(d, "server", want)
+        Err(_) => test.assert(false)
+        Ok(ps) =>
+            test.assert(list.len(ps) == 1)
+            test.assert(ps[0] == "server.port")
+
+    let d2 = teditconv.apply_value(d, "server", want, teditfmt.defaults())!
+
+    test.case("one splice, because one value differed")
+    test.assert(list.len(teditdoc.edits(d2)) == 1)
+
+    test.case("the host's trailing comment survived, because the host did not change")
+    test.assert(str.contains(teditdoc.render(d2), "host = \"localhost\"  # dev only"))
+
+    test.case("and the port is the tree's")
+    test.assert(teditdoc.int_at(d2, "server.port") == Some(9090))
+
+@test
+fn test_apply_value_does_not_delete_what_the_tree_does_not_carry() [io]
+    let d = teditdoc.parse(src())!
+    let partial = tomlread.parse("port = 9090\n")!
+    let d2 = teditconv.apply_value(d, "server", partial, teditfmt.defaults())!
+
+    test.case("the entry the tree never mentioned is still there")
+    test.assert(teditdoc.str_at(d2, "server.host") == Some("localhost"))
+
+    test.case("replace_value is the other call, and it is a name rather than a flag")
+    let d3 = teditconv.replace_value(d, "server", partial, teditfmt.defaults())!
+    test.assert(not teditdoc.contains(d3, "server.host"))
+
+    test.case("and the table it was not pointed at is untouched either way")
+    test.assert(teditdoc.contains(d3, "logging.level"))
+
+@test
+fn test_a_document_made_from_a_tree_is_honest_about_its_bytes() [io]
+    let v = tomlread.parse("a = 1\nb = \"two\"\n")!
+    let d = teditconv.from_value(v, teditfmt.defaults())!
+
+    test.case("every byte is produced, so it is not untouched")
+    test.assert(not teditdoc.is_untouched(d))
+
+    test.case("and it holds the data the tree held")
+    test.assert(teditconv.value_eq(d, v))
+
+    test.case("key order is the tree's own, because a TomlTable is a list of pairs")
+    let ks = teditdoc.keys_of(d, "")
+    test.assert(list.len(ks) == 2)
+    test.assert(ks[0].name == "a")
+
+@test
+fn test_the_round_trip_holds_for_data_and_not_for_files() [io]
+    let d = teditdoc.parse(src())!
+    let v = teditconv.to_value(d)!
+    let e = teditconv.from_value(v, teditfmt.defaults())!
+
+    test.case("the two documents hold the same data")
+    test.assert(teditconv.value_eq(e, v))
+
+    test.case("and they are different files — which is why there are two types")
+    test.assert(teditdoc.render(e) != teditdoc.render(d))
+
+    test.case("value_diff between the original document and its own tree is empty")
+    match teditconv.value_diff(d, "", v)
+        Err(_) => test.assert(false)
+        Ok(ps) => test.assert(list.len(ps) == 0)
+
+@test
+fn test_new_value_of_is_the_per_value_half() [io]
+    let v = tomlread.parse_value("42")!
+
+    test.case("a scalar crosses without a tree being built around it")
+    test.assert(teditconv.new_value_of(v).repr == "42")

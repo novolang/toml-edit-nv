@@ -1,0 +1,221 @@
+// teditkey.nv — keys, paths, and the three ways TOML lets you spell
+// one.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A KEY IS NOT A STRING, and treating it as one is the defect this
+// module exists to make impossible.  TOML admits three spellings —
+// bare (`name`), basic (`"name"`) and literal (`'name'`) — and they
+// name the same key.  A tool that compared the written bytes would
+// decide that `"toml-nv"` and `toml-nv` are two dependencies and add
+// the one that is already there; a tool that normalised on the way in
+// would rewrite a manifest's quoting on the way out.  So a `TeditKey`
+// carries the DECODED name and the style it was written in, `key_eq`
+// compares the first, and rendering uses the second.
+//
+// A PATH IS DOTTED AND DOTS INSIDE A KEY ARE NOT SEPARATORS.  `a.b`
+// is two segments; `"a.b"` is one key whose name contains a dot.  That
+// distinction is the reason `path_segments` answers a `Result` and
+// `path_of` takes a list rather than a string: a round trip through a
+// single `Str` cannot represent a key with a dot in it, and a package
+// whose main use is editing `novo.toml` has to represent
+// `[docs.pages]`'s `"README.md"` correctly.
+//
+// WHY THE SEPARATOR IS STILL A DOT IN THE PUBLIC API.  Because the
+// alternative — a path as `[Str]` everywhere — makes the common call
+// three times as long to write and its own error to get wrong.  So
+// both spellings exist, the string one is the convenience, and the one
+// place they disagree is documented on `path_segments` rather than
+// discovered.
+
+// How a key was written.
+//
+// Kept per key rather than per document, because a real file mixes
+// them: `novo.toml` writes `name` bare and `"README.md"` quoted, and
+// an editor that picked one style for the file would rewrite whichever
+// half it did not pick.
+pub enum TeditKeyStyle
+    // `name` — letters, digits, `_` and `-` only.
+    TeditBareKey
+    // `"name"` — a basic string, with escapes.
+    TeditBasicKey
+    // `'name'` — a literal string, no escapes, no way to write a
+    // single quote.
+    TeditLiteralKey
+
+// One key of a document.
+//
+// `name` is DECODED: the escapes of a basic key are resolved, so
+// `"a\tb"` has a tab in its name and comparing it against another key
+// is a comparison of what they mean.
+pub struct TeditKey
+    name: Str
+    style: TeditKeyStyle
+
+// What went wrong reading a path or a key.
+//
+// Every variant carries the byte offset into the path or key text it
+// was found at, because these are diagnostics a tool prints beside the
+// caller's own input.
+pub enum TeditKeyError
+    // A path with an empty segment: `a..b`, a leading dot, a trailing
+    // dot.  TOML has no unnamed key, and the alternative to refusing
+    // is silently editing a different entry.
+    TeditEmptySegment(at: Int)
+    // A quoted segment whose quote never closed.
+    TeditUnclosedQuote(at: Int)
+    // An escape a basic key may not carry.
+    TeditBadKeyEscape(at: Int, seq: Str)
+    // A bare segment carrying a byte bare keys may not hold — a space,
+    // a `#`, a `=`, a quote.  The byte is in the payload so the message
+    // can show it.
+    TeditBadBareByte(at: Int, byte: Int)
+    // Text after a closing quote that is not a dot or the end: `"a"b`.
+    TeditTrailingText(at: Int)
+
+// `TeditKeyError` is an `Error`, which is what lets
+// `Result<[TeditKey], TeditKeyError>` exist at all (SPEC § 3.4).
+impl Error for TeditKeyError
+    // The one-line message, naming the rule rather than the scanner's
+    // state.  The offset is in the value and is deliberately not in the
+    // sentence, because a caller renders it against its own input.
+    fn message(self) -> Str
+        todo("toml-edit-nv.TeditKeyError.message")
+
+// A key with a name and the style it should be written in.
+//
+// ```novo
+// use teditkey
+//
+// fn main() [io]
+//     let k = teditkey.key("toml-nv", TeditBareKey)
+//     println(k.name)
+// ```
+pub fn key(name: Str, style: TeditKeyStyle) -> TeditKey []
+    todo("toml-edit-nv.teditkey.key")
+
+// A key in the narrowest style that can hold its name.
+//
+// Bare when the name is bare-able, literal when it is not but contains
+// no single quote, and basic otherwise.  What a policy uses when the
+// caller did not choose and the document gave no habit to copy.
+pub fn key_auto(name: Str) -> TeditKey []
+    todo("toml-edit-nv.teditkey.key_auto")
+
+// The empty key.
+//
+// What an array element carries, since positions have no names.
+// `is_empty` is the check; nothing else in the package treats it
+// specially.
+pub fn empty_key() -> TeditKey []
+    todo("toml-edit-nv.teditkey.empty_key")
+
+// Whether a key is the empty one.
+pub fn is_empty(k: TeditKey) -> Bool []
+    todo("toml-edit-nv.teditkey.is_empty")
+
+// Whether two keys name the same thing.
+//
+// A comparison of DECODED names, so `name`, `"name"` and `'name'` are
+// one key — which is what the specification says and what a tool
+// checking whether a dependency is already present has to ask.
+pub fn key_eq(a: TeditKey, b: TeditKey) -> Bool []
+    todo("toml-edit-nv.teditkey.key_eq")
+
+// A key as it would be written, quotes and escapes included.
+//
+// ```novo
+// use teditkey
+//
+// fn main() [io]
+//     println(teditkey.render(teditkey.key_auto("README.md")))
+// ```
+pub fn render(k: TeditKey) -> Str []
+    todo("toml-edit-nv.teditkey.render")
+
+// Whether a name can be written as a bare key: ASCII letters, digits,
+// `_` and `-`, and at least one byte.
+//
+// ASCII and nothing wider, which is the specification's own rule and
+// not a simplification — TOML 1.0 § Keys lists exactly those four
+// classes, so a key with an accent in it is quoted by every conforming
+// writer.
+pub fn bare_ok(name: Str) -> Bool []
+    todo("toml-edit-nv.teditkey.bare_ok")
+
+// Whether a byte may appear in a bare key.
+pub fn bare_byte_ok(byte: Int) -> Bool []
+    todo("toml-edit-nv.teditkey.bare_byte_ok")
+
+// ── Paths ────────────────────────────────────────────────────────────
+
+// Split a dotted path into its keys.
+//
+// The one place the convenience of a string path is paid for, and the
+// payment is stated rather than hidden: a quoted segment is read with
+// its quotes, so `dependencies."toml-nv"` is two segments and
+// `dependencies.toml-nv` is also two — a `-` is bare-legal.  A segment
+// that is empty, unclosed or carries a byte a bare key may not is a
+// refusal with the offset.
+//
+// ```novo
+// use teditkey
+// use std.list
+//
+// fn main() [io]
+//     match teditkey.path_segments("docs.pages.readme")
+//         Ok(ks) => println("${list.len(ks)}")
+//         Err(_) => println("not a path")
+// ```
+pub fn path_segments(path: Str) -> Result<[TeditKey], TeditKeyError> []
+    todo("toml-edit-nv.teditkey.path_segments")
+
+// Join keys into a dotted path, quoting the segments that need it.
+//
+// The inverse of `path_segments` for every path the latter accepts,
+// which is the property that makes a path safe to carry through a
+// caller as a string.
+pub fn path_of(keys: [TeditKey]) -> Str []
+    todo("toml-edit-nv.teditkey.path_of")
+
+// Join names into a dotted path, choosing each segment's style with
+// `key_auto`.
+//
+// The call a caller writes when it has names rather than keys — which
+// is every caller that built a path out of its own data.
+pub fn path_of_names(names: [Str]) -> Str []
+    todo("toml-edit-nv.teditkey.path_of_names")
+
+// The path with its last segment removed, or the empty string when it
+// had one segment.
+//
+// What `insert` uses to find the table a new entry belongs in.
+pub fn parent_path(path: Str) -> Str []
+    todo("toml-edit-nv.teditkey.parent_path")
+
+// The last segment of a path, or the empty key when the path is empty.
+pub fn last_key(path: Str) -> TeditKey []
+    todo("toml-edit-nv.teditkey.last_key")
+
+// Whether `prefix` names an ancestor of `path`, or the same entry.
+//
+// A comparison segment by segment and not a string prefix test:
+// `depend` is a string prefix of `dependencies` and an ancestor of
+// nothing.
+pub fn path_starts_with(path: Str, prefix: Str) -> Bool []
+    todo("toml-edit-nv.teditkey.path_starts_with")
+
+// How deep a path is, in segments.
+pub fn path_depth(path: Str) -> Int []
+    todo("toml-edit-nv.teditkey.path_depth")
+
+// A one-line message for a key error, without a position prefix.
+//
+// The position is in the value; a caller renders it in its own
+// file:line:col shape, which is why this does not.
+pub fn key_error_message(e: TeditKeyError) -> Str []
+    todo("toml-edit-nv.teditkey.key_error_message")
+
+// Where in the path text a key error was found.
+pub fn key_error_at(e: TeditKeyError) -> Int []
+    todo("toml-edit-nv.teditkey.key_error_at")

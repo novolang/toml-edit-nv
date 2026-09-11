@@ -1,0 +1,152 @@
+// teditconv.nv — the bridge to toml-nv's value tree.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// TWO TYPES, TWO LAWS, ONE DIRECTION THAT IS FREE.  toml-nv's
+// `TomlValue` is a VALUE: two trees holding the same data are the same
+// tree, and `tomlnode.equal` says so.  A `TeditDoc` is a DOCUMENT: two
+// files holding the same data with different comments are different
+// files.  Conflating them would make equality answer one of the two
+// questions and be wrong about the other, so they are two types and
+// this module is the crossing.
+//
+// `to_value` is free: a document always knows what data it holds, and
+// throwing the trivia away is what the caller asked for.
+//
+// `from_value` is NOT free and exists anyway, which is the decision
+// worth arguing.  toml-nv's own `tomledit` refuses the direction, on
+// the grounds that a tree has no trivia to preserve and a document
+// made from one is just the canonical writer under a name that
+// promises otherwise.  That argument holds for a package with no
+// formatting policy.  Here there is one, so `from_value(v, p)` is a
+// different call from `tomlwrite.to_string(v, style)`: the policy is
+// the same value that governs every subsequent edit, so a file
+// generated and then edited by the same tool is consistent with itself
+// — which is exactly what a generated lock file, a scaffolded manifest
+// or a migrated config wants and what two writers with two style
+// vocabularies cannot give.
+//
+// `apply_value` IS the interesting one.  It writes a whole subtree into
+// an existing document and touches only the entries whose values
+// differ, so a configuration merged from a template produces a diff
+// the size of the difference rather than the size of the file.  A
+// caller that did this by rendering the merged tree would have rewritten
+// every byte; `edits` after `apply_value` counts what actually moved.
+
+use teditdoc
+use tediterr
+use tedititem
+use teditfmt
+use tomlnode
+
+// The data a document holds, with the trivia dropped.
+//
+// Every kind maps: a standard table and an inline table are both
+// `TomlTable`, an array of tables is a `TomlArray` of `TomlTable`s,
+// and an implicit table is the table it implies.  Which is to say the
+// mapping is onto and not one-to-one, which is the whole reason the
+// other direction needs a policy.
+//
+// Answers a `Result` because a document can hold a datetime toml-nv
+// refuses — the two packages' date parsers are calendar-nv's in both
+// cases, but a document parsed leniently and handed to a strict reader
+// is a case that has to have an answer, and this is it.
+//
+// ```novo
+// use teditconv
+// use teditdoc
+//
+// fn main() [io]
+//     match teditdoc.parse("port = 8080\n")
+//         Err(_) => println("not toml")
+//         Ok(d)  =>
+//             match teditconv.to_value(d)
+//                 Ok(_)  => println("converted")
+//                 Err(_) => println("refused")
+// ```
+pub fn to_value(d: teditdoc.TeditDoc) -> Result<tomlnode.TomlValue, tediterr.TeditError> []
+    todo("toml-edit-nv.teditconv.to_value")
+
+// The value at one path, as toml-nv's tree.
+//
+// `to_value` restricted to a subtree, so a caller reading one table
+// out of a large document does not build the whole tree to throw most
+// of it away.
+pub fn value_at(d: teditdoc.TeditDoc,
+                path: Str) -> Result<tomlnode.TomlValue, tediterr.TeditError> []
+    todo("toml-edit-nv.teditconv.value_at")
+
+// A document written from a value tree under a policy.
+//
+// Every byte is produced, so `teditdoc.is_untouched` on the result is
+// FALSE and `teditdoc.made_count` is the number of runs it wrote —
+// which is the honest answer, because none of those bytes came from
+// anywhere.
+//
+// Key order is the tree's own order, because `TomlTable` carries a
+// list of pairs rather than a map and the order it carries is the
+// order it was built in.
+pub fn from_value(v: tomlnode.TomlValue,
+                  p: teditfmt.TeditPolicy) -> Result<teditdoc.TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditconv.from_value")
+
+// Write a value tree into a document, changing only what differs.
+//
+// THE CALL WORTH HAVING.  A tool that merges a template into a user's
+// config, applies a migration, or writes back a settings struct hands
+// this the tree it wants the file to hold and gets a document whose
+// splice list is the size of the difference.  Entries whose value is
+// already equal are not touched at all, so their comments, their
+// spelling and their position survive; entries that differ have their
+// value bytes rewritten; entries the tree does not carry are left
+// alone, because a value tree cannot express "remove this" and a call
+// that deleted everything absent would destroy a config file the first
+// time it ran over a partial tree.
+//
+// `prune` is the opposite policy, spelled as its own call below rather
+// than as a flag, because the two have completely different blast
+// radii and a caller should have to type which one it meant.
+pub fn apply_value(d: teditdoc.TeditDoc, path: Str, v: tomlnode.TomlValue,
+                   p: teditfmt.TeditPolicy) -> Result<teditdoc.TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditconv.apply_value")
+
+// Write a value tree into a document and remove what the tree does not
+// carry.
+//
+// `apply_value` plus the deletions, for a caller that means "make the
+// file be this".  A separate name and not a flag: reading a `true` at
+// a call site does not tell a reviewer that a config file's unmentioned
+// half is about to go.
+pub fn replace_value(d: teditdoc.TeditDoc, path: Str, v: tomlnode.TomlValue,
+                     p: teditfmt.TeditPolicy) -> Result<teditdoc.TeditDoc, tediterr.TeditError> []
+    todo("toml-edit-nv.teditconv.replace_value")
+
+// A new value built from one node of toml-nv's tree.
+//
+// The per-value half of `apply_value`, published because the common
+// edit is one scalar and building a `TomlValue` around it to write it
+// back is ceremony.  A table or an array converts too, into the nested
+// `TeditNewValue` that renders inline.
+pub fn new_value_of(v: tomlnode.TomlValue) -> tedititem.TeditNewValue []
+    todo("toml-edit-nv.teditconv.new_value_of")
+
+// The paths at which a document and a value tree disagree.
+//
+// What `apply_value` would touch, answered without touching anything.
+// A tool showing a person what a merge will do calls this first; a
+// test asserting a merge is a no-op asserts it is empty.
+//
+// Order is the document's, then the tree's for paths the document does
+// not have — so a reader sees changes in file order and additions
+// after them.
+pub fn value_diff(d: teditdoc.TeditDoc, path: Str,
+                  v: tomlnode.TomlValue) -> Result<[Str], tediterr.TeditError> []
+    todo("toml-edit-nv.teditconv.value_diff")
+
+// Whether a document holds exactly the data a tree does.
+//
+// `value_diff` empty in both directions.  The round-trip assertion:
+// `to_value` then `from_value` then this is true, and the two
+// documents are different files.
+pub fn value_eq(d: teditdoc.TeditDoc, v: tomlnode.TomlValue) -> Bool []
+    todo("toml-edit-nv.teditconv.value_eq")

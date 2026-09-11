@@ -1,0 +1,167 @@
+// teditkey_tests.nv — three spellings of one key, and the dot that is
+// not a separator.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: toml-edit-nv.<module>.<fn>`.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: `name`, `"name"` and `'name'`
+// are ONE key. A tool that compared the written bytes would add a
+// dependency that is already there, and a tool that normalised on the
+// way in would rewrite a manifest's quoting on the way out. `key_eq`
+// compares meanings and `render` writes spellings, and the two never
+// meet.
+
+use std.test
+use std.list
+use teditkey
+
+@test
+fn test_three_spellings_are_one_key() [io]
+    let bare = teditkey.key("name", TeditBareKey)
+    let basic = teditkey.key("name", TeditBasicKey)
+    let literal = teditkey.key("name", TeditLiteralKey)
+
+    test.case("they are equal, because equality is over the decoded name")
+    test.assert(teditkey.key_eq(bare, basic))
+    test.assert(teditkey.key_eq(basic, literal))
+
+    test.case("and they render as three different strings")
+    test.assert(teditkey.render(bare) == "name")
+    test.assert(teditkey.render(basic) == "\"name\"")
+    test.assert(teditkey.render(literal) == "'name'")
+
+    test.case("two different names are not equal whatever their spelling")
+    test.assert(not teditkey.key_eq(bare, teditkey.key("other", TeditBareKey)))
+
+@test
+fn test_key_auto_picks_the_narrowest_spelling_that_holds_the_name() [io]
+    test.case("a bare-able name stays bare")
+    test.assert(teditkey.render(teditkey.key_auto("toml-nv")) == "toml-nv")
+    test.assert(teditkey.render(teditkey.key_auto("host_modules")) == "host_modules")
+
+    test.case("a name with a dot cannot be bare")
+    test.assert(teditkey.render(teditkey.key_auto("README.md")) == "\"README.md\"")
+
+    test.case("a name with a backslash takes the literal spelling, which needs no escape")
+    test.assert(teditkey.render(teditkey.key_auto("C:\\tmp")) == "'C:\\tmp'")
+
+    test.case("an empty name is not bare-able either")
+    test.assert(not teditkey.bare_ok(""))
+
+@test
+fn test_bare_keys_are_ascii_and_the_rule_is_the_specifications() [io]
+    test.case("letters, digits, underscore and hyphen")
+    test.assert(teditkey.bare_ok("a"))
+    test.assert(teditkey.bare_ok("A9_-"))
+
+    test.case("a space, a dot, a quote and a hash are none of them")
+    test.assert(not teditkey.bare_ok("a b"))
+    test.assert(not teditkey.bare_ok("a.b"))
+    test.assert(not teditkey.bare_ok("a\"b"))
+    test.assert(not teditkey.bare_ok("a#b"))
+
+    test.case("a non-ASCII letter is quoted by every conforming writer, and by this one")
+    test.assert(not teditkey.bare_ok("café"))
+
+    test.case("the byte predicate agrees with the string one")
+    test.assert(teditkey.bare_byte_ok(97))
+    test.assert(not teditkey.bare_byte_ok(46))
+
+@test
+fn test_a_dot_inside_a_quoted_key_is_not_a_separator() [io]
+    test.case("`a.b` is two segments")
+    match teditkey.path_segments("a.b")
+        Err(_) => test.assert(false)
+        Ok(ks) =>
+            test.assert(list.len(ks) == 2)
+            test.assert(ks[0].name == "a")
+            test.assert(ks[1].name == "b")
+
+    test.case("`\"a.b\"` is ONE key whose name contains a dot")
+    match teditkey.path_segments("\"a.b\"")
+        Err(_) => test.assert(false)
+        Ok(ks) =>
+            test.assert(list.len(ks) == 1)
+            test.assert(ks[0].name == "a.b")
+
+    test.case("and the mixed case is the one a manifest actually has")
+    match teditkey.path_segments("docs.pages.\"README.md\"")
+        Err(_) => test.assert(false)
+        Ok(ks) =>
+            test.assert(list.len(ks) == 3)
+            test.assert(ks[2].name == "README.md")
+
+@test
+fn test_path_of_round_trips_every_path_segments_accepts() [io]
+    test.case("a plain path")
+    let a = teditkey.path_of_names(["dependencies", "toml-nv"])
+    test.assert(a == "dependencies.toml-nv")
+
+    test.case("a name that needs quoting gets it, and reads back whole")
+    let b = teditkey.path_of_names(["docs", "pages", "README.md"])
+    match teditkey.path_segments(b)
+        Err(_) => test.assert(false)
+        Ok(ks) =>
+            test.assert(list.len(ks) == 3)
+            test.assert(ks[2].name == "README.md")
+
+@test
+fn test_a_malformed_path_is_refused_with_an_offset() [io]
+    test.case("an empty segment")
+    match teditkey.path_segments("a..b")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(teditkey.key_error_at(e) > 0)
+
+    test.case("a leading dot")
+    match teditkey.path_segments(".a")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a trailing dot")
+    match teditkey.path_segments("a.")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("an unclosed quote")
+    match teditkey.path_segments("\"a")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("text after a closing quote")
+    match teditkey.path_segments("\"a\"b")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("and every refusal has a sentence")
+    match teditkey.path_segments("a..b")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(teditkey.key_error_message(e) != "")
+
+@test
+fn test_path_helpers_compare_segments_and_not_strings() [io]
+    test.case("`depend` is a string prefix of `dependencies` and an ancestor of nothing")
+    test.assert(not teditkey.path_starts_with("dependencies.url-nv", "depend"))
+
+    test.case("`dependencies` is an ancestor")
+    test.assert(teditkey.path_starts_with("dependencies.url-nv", "dependencies"))
+
+    test.case("a path is its own ancestor")
+    test.assert(teditkey.path_starts_with("a.b", "a.b"))
+
+    test.case("parent_path drops one segment")
+    test.assert(teditkey.parent_path("dependencies.url-nv") == "dependencies")
+    test.assert(teditkey.parent_path("package") == "")
+
+    test.case("last_key answers the leaf")
+    test.assert(teditkey.last_key("dependencies.url-nv").name == "url-nv")
+
+    test.case("depth counts segments and not dots")
+    test.assert(teditkey.path_depth("docs.pages.\"README.md\"") == 3)
+
+@test
+fn test_the_empty_key_is_what_an_array_element_carries() [io]
+    test.case("it is empty")
+    test.assert(teditkey.is_empty(teditkey.empty_key()))
+
+    test.case("and a named key is not")
+    test.assert(not teditkey.is_empty(teditkey.key_auto("a")))

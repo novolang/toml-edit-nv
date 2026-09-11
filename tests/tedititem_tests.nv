@@ -1,0 +1,171 @@
+// tedititem_tests.nv — the load-bearing type, and the policy that only
+// ever governs new bytes.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: toml-edit-nv.<module>.<fn>`.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR: `origin_of` separates the bytes
+// that were already in the file from the bytes this package wrote. It
+// is the one question the whole design is arranged to be able to
+// answer, and every "format preserving" claim reduces to it.
+
+use std.test
+use std.list
+use teditdoc
+use tedititem
+use teditfmt
+
+fn src() -> Str
+    let lines = ["# top", "port = 8080", "name = 'literal'", "hex  = 0x2A", ""]
+    list.join(lines, "\n")
+
+@test
+fn test_a_parsed_document_is_original_everywhere() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("a span into the original reports where it came from")
+    test.assert(tedititem.origin_of(TeditSpan(start: 0, end: 5)) == TeditOriginal)
+
+    test.case("and made text reports the other answer")
+    test.assert(tedititem.origin_of(tedititem.made("x")) == TeditProduced)
+
+    test.case("nothing in a freshly parsed document is produced")
+    test.assert(teditdoc.made_count(d) == 0)
+
+@test
+fn test_a_raw_stands_for_bytes_of_the_document_it_came_from() [io]
+    test.case("a span reads back the bytes it names")
+    test.assert(tedititem.raw_text(TeditSpan(start: 0, end: 5), src()) == "# top")
+
+    test.case("made text reads back as itself whatever the source is")
+    test.assert(tedititem.raw_text(tedititem.made("hello"), src()) == "hello")
+
+    test.case("length is answered without building the string")
+    test.assert(tedititem.raw_len(TeditSpan(start: 0, end: 5), src()) == 5)
+    test.assert(tedititem.raw_len(tedititem.made("hello"), src()) == 5)
+
+    test.case("an empty span and empty made text are both empty and are not the same statement")
+    test.assert(tedititem.raw_empty(TeditSpan(start: 3, end: 3), src()))
+    test.assert(tedititem.raw_empty(tedititem.made(""), src()))
+    test.assert(tedititem.origin_of(TeditSpan(start: 3, end: 3)) != tedititem.origin_of(tedititem.made("")))
+
+@test
+fn test_a_scalar_keeps_its_repr_beside_its_meaning() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("three spellings of forty-two would be one integer and three files")
+    match teditdoc.get(d, "hex")
+        None     => test.assert(false)
+        Some(it) =>
+            test.assert(tedititem.int_of(it, d.original) == Some(42))
+            test.assert(tedititem.repr_of(it, d.original) == "0x2A")
+
+    test.case("a literal string decodes without its quotes and renders with them")
+    match teditdoc.get(d, "name")
+        None     => test.assert(false)
+        Some(it) =>
+            test.assert(tedititem.str_of(it, d.original) == Some("literal"))
+            test.assert(tedititem.repr_of(it, d.original) == "'literal'")
+
+    test.case("a value nobody set is still the bytes it was parsed from")
+    match teditdoc.get(d, "port")
+        None     => test.assert(false)
+        Some(it) => test.assert(tedititem.value_untouched(it))
+
+    test.case("asking for the wrong kind answers None rather than a coercion")
+    match teditdoc.get(d, "name")
+        None     => test.assert(false)
+        Some(it) => test.assert(tedititem.int_of(it, d.original) == None)
+
+@test
+fn test_decor_holds_the_comments_and_the_newline_rule_is_stated() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("the comment above the first key is in that key's prefix")
+    match teditdoc.get(d, "port")
+        None     => test.assert(false)
+        Some(it) =>
+            let dec = tedititem.decor_of(it)
+            test.assert(tedititem.prefix_comment(dec, d.original) == "top")
+            test.assert(list.len(tedititem.prefix_comment_lines(dec, d.original)) == 1)
+            test.assert(tedititem.suffix_comment(dec, d.original) == "")
+
+    test.case("an empty decor is empty on both sides")
+    let e = tedititem.empty_decor()
+    test.assert(tedititem.raw_empty(e.prefix, ""))
+    test.assert(tedititem.raw_empty(e.suffix, ""))
+
+@test
+fn test_the_constructors_produce_the_ordinary_spelling() [io]
+    test.case("a string")
+    test.assert(tedititem.string_value("^0.0.3").kind == TeditStr)
+
+    test.case("an integer, in decimal by default and in a base when asked")
+    test.assert(tedititem.int_value(42).repr == "42")
+    test.assert(tedititem.int_value_base(42, 16).repr == "0x2a")
+
+    test.case("a base TOML does not have falls back to decimal rather than inventing one")
+    test.assert(tedititem.int_value_base(42, 7).repr == "42")
+
+    test.case("a boolean has two spellings and TOML has no others")
+    test.assert(tedititem.bool_value(true).repr == "true")
+    test.assert(tedititem.bool_value(false).repr == "false")
+
+    test.case("a raw value is checked before it is accepted")
+    test.assert(tedititem.new_value_ok(tedititem.raw_value(TeditInt, "42")))
+    test.assert(not tedititem.new_value_ok(tedititem.raw_value(TeditInt, "not-a-number")))
+
+@test
+fn test_a_policy_governs_only_what_is_added() [io]
+    let p = teditfmt.defaults()
+
+    test.case("the defaults are what novo.toml and the specification's examples look like")
+    test.assert(p.space_around_eq == 1)
+    test.assert(p.indent == 0)
+    test.assert(p.ensure_trailing_newline)
+
+    test.case("the separator is built from the policy and not hard-coded")
+    test.assert(teditfmt.eq_separator(p) == " = ")
+    test.assert(teditfmt.eq_separator(teditfmt.compact_policy()) == "=")
+
+    test.case("a string is quoted under the policy's style")
+    test.assert(teditfmt.quote_string("^0.0.3", p) == "\"^0.0.3\"")
+
+    test.case("auto picks a literal for a value whose basic spelling is unreadable")
+    test.assert(teditfmt.string_style_for("C:\\tmp", p) == TeditLiteralString)
+
+    test.case("and a multi-line value has only one legal spelling, asked for or not")
+    test.assert(teditfmt.string_style_for("a\nb", p) == TeditMultilineString)
+
+    test.case("indent_for counts headers above the key, not dotted segments")
+    test.assert(teditfmt.indent_for(1, p) == "")
+
+@test
+fn test_the_manifest_policy_pins_the_two_decisions_inference_must_not_make() [io]
+    let m = teditfmt.manifest_policy()
+
+    test.case("append, so an alphabetical table does not start sorting itself")
+    test.assert(m.placement == TeditAppend)
+
+    test.case("header tables, so a manifest with no tables does not grow a brace")
+    test.assert(m.table_style == TeditHeaderTable)
+
+    test.case("and it is not the same policy as the defaults")
+    test.assert(not teditfmt.policy_eq(m, teditfmt.compact_policy()))
+
+@test
+fn test_infer_counts_the_file_rather_than_reading_its_first_line() [io]
+    let spaced = list.join(["a=1", "b = 2", "c = 3", "d = 4", ""], "\n")
+
+    test.case("one exception at the top does not decide a file")
+    test.assert(teditfmt.infer(spaced).space_around_eq == 1)
+
+    test.case("a file with no evidence falls back to the defaults, and says so")
+    test.assert(teditfmt.infer_confidence("") == 0)
+
+    test.case("a file with evidence does not")
+    test.assert(teditfmt.infer_confidence(spaced) > 0)
+
+    test.case("two keys in order are not a sorted table — that happens half the time by accident")
+    let two = list.join(["[t]", "a = 1", "b = 2", ""], "\n")
+    test.assert(teditfmt.infer(two).placement == TeditAppend)

@@ -1,0 +1,293 @@
+// teditdoc_tests.nv — the worked example, and the property it rests on.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: toml-edit-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE ASSERTION THIS SUITE EXISTS FOR is the first one below: adding a
+// dependency to a manifest produces ONE splice. Everything else in this
+// file is a consequence of that or a case that would break it.
+//
+// THE VECTORS are `toml-test`'s valid corpus for the parse half and
+// `toml_edit`'s own round-trip cases for the preservation half, plus one
+// this package adds: `novo.toml` itself, which is the file the compiler
+// edits and therefore the file this package has to be right about.
+
+use std.test
+use std.list
+use std.str
+use teditdoc
+use tedititem
+use teditfmt
+use teditkey
+
+// The manifest shape the compiler writes and reads, small enough to
+// assert about byte by byte and carrying every feature that has ever
+// broken a naive editor: a comment above a key, a trailing comment, a
+// quoted key, a table after the one being edited, and an alignment the
+// author chose.
+fn manifest() -> Str
+    let lines = ["[package]",
+                 "name        = \"demo\"",
+                 "version     = \"0.1.0\"",
+                 "# The oldest novo this builds on.",
+                 "novo        = \">= 0.8.9\"   # raised 2026-09",
+                 "",
+                 "[docs.pages]",
+                 "\"README.md\" = \"The front page\"",
+                 "",
+                 "[dependencies]",
+                 "url-nv = \"^0.1.1\"",
+                 ""]
+    list.join(lines, "\n")
+
+@test
+fn test_adding_a_dependency_is_one_splice() [io]
+    let d = teditdoc.parse(manifest())!
+
+    test.case("a freshly parsed document has changed nothing")
+    test.assert(teditdoc.is_untouched(d))
+    test.assert(list.len(teditdoc.edits(d)) == 0)
+
+    test.case("and renders back as the bytes it was parsed from")
+    test.assert(teditdoc.render(d) == manifest())
+
+    let d2 = teditdoc.insert(d, "dependencies.toml-nv",
+                             tedititem.string_value("^0.0.3"),
+                             teditfmt.manifest_policy())!
+
+    test.case("THE CLAIM: one dependency line, one splice")
+    test.assert(list.len(teditdoc.edits(d2)) == 1)
+
+    test.case("and one run of produced bytes in the render")
+    test.assert(teditdoc.made_count(d2) == 1)
+
+    test.case("the splice inserts and removes nothing")
+    let e = teditdoc.edits(d2)[0]
+    test.assert(e.removed == 0)
+    test.assert(str.contains(e.inserted, "toml-nv"))
+
+    test.case("the document is no longer untouched, and the original is intact")
+    test.assert(not teditdoc.is_untouched(d2))
+    test.assert(d2.original == manifest())
+
+    test.case("the entry is there and reads back")
+    test.assert(teditdoc.str_at(d2, "dependencies.toml-nv") == Some("^0.0.3"))
+
+    test.case("and the first document is still a document — nothing was mutated")
+    test.assert(teditdoc.is_untouched(d))
+
+@test
+fn test_everything_the_edit_did_not_name_is_byte_identical() [io]
+    let d = teditdoc.parse(manifest())!
+    let d2 = teditdoc.insert(d, "dependencies.toml-nv",
+                             tedititem.string_value("^0.0.3"),
+                             teditfmt.manifest_policy())!
+    let out = teditdoc.render(d2)
+
+    test.case("the comment above `novo` survived")
+    test.assert(str.contains(out, "# The oldest novo this builds on.\n"))
+
+    test.case("so did the trailing comment, on its own line")
+    test.assert(str.contains(out, "\">= 0.8.9\"   # raised 2026-09\n"))
+
+    test.case("so did the author's alignment")
+    test.assert(str.contains(out, "name        = \"demo\"\n"))
+
+    test.case("so did the quoted key in [docs.pages]")
+    test.assert(str.contains(out, "\"README.md\" = \"The front page\"\n"))
+
+    test.case("the existing dependency is where it was")
+    test.assert(str.contains(out, "url-nv = \"^0.1.1\"\n"))
+
+    test.case("and the output is the input plus exactly the inserted run")
+    let e = teditdoc.edits(d2)[0]
+    test.assert(str.len(out) == str.len(manifest()) + str.len(e.inserted))
+
+@test
+fn test_a_missing_dependencies_table_is_created_where_it_belongs() [io]
+    let src = "[package]\nname = \"demo\"\n"
+    let d = teditdoc.parse(src)!
+    let d2 = teditdoc.insert(d, "dependencies.toml-nv",
+                              tedititem.string_value("^0.0.3"),
+                              teditfmt.manifest_policy())!
+    let out = teditdoc.render(d2)
+
+    test.case("the header was written")
+    test.assert(str.contains(out, "[dependencies]\n"))
+
+    test.case("at the end of the file, not inside [package]")
+    test.assert(str.contains(out, "name = \"demo\"\n"))
+    test.assert(teditdoc.contains(d2, "dependencies.toml-nv"))
+
+    test.case("the whole of [package] is still there, untouched")
+    test.assert(str.contains(out, "[package]\nname = \"demo\"\n"))
+
+@test
+fn test_the_three_strict_edits_are_strict() [io]
+    let d = teditdoc.parse(manifest())!
+
+    test.case("set on a path that does not exist is refused")
+    match teditdoc.set(d, "dependencies.absent-nv",
+                       tedititem.string_value("^1.0.0"), teditfmt.manifest_policy())
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("insert on a path that does exist is refused — a pinned version is not overwritten")
+    match teditdoc.insert(d, "dependencies.url-nv",
+                          tedititem.string_value("^9.9.9"), teditfmt.manifest_policy())
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("upsert is the one lenient call, and it is lenient by name")
+    let a = teditdoc.upsert(d, "dependencies.url-nv",
+                            tedititem.string_value("^0.1.2"), teditfmt.manifest_policy())!
+    test.assert(teditdoc.str_at(a, "dependencies.url-nv") == Some("^0.1.2"))
+    let b = teditdoc.upsert(d, "dependencies.new-nv",
+                            tedititem.string_value("^0.0.1"), teditfmt.manifest_policy())!
+    test.assert(teditdoc.contains(b, "dependencies.new-nv"))
+
+    test.case("a path whose parent is not a table is refused, and says what it found")
+    match teditdoc.insert(d, "package.name.deeper",
+                          tedititem.string_value("x"), teditfmt.manifest_policy())
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_set_rewrites_the_value_and_nothing_around_it() [io]
+    let d = teditdoc.parse(manifest())!
+    let d2 = teditdoc.set(d, "package.version",
+                          tedititem.string_value("0.2.0"),
+                          teditfmt.manifest_policy())!
+    let out = teditdoc.render(d2)
+
+    test.case("one splice")
+    test.assert(list.len(teditdoc.edits(d2)) == 1)
+
+    test.case("the key kept its own alignment")
+    test.assert(str.contains(out, "version     = \"0.2.0\"\n"))
+
+    test.case("and a value with a trailing comment keeps the comment after it")
+    let d3 = teditdoc.set(d, "package.novo",
+                          tedititem.string_value(">= 0.9.0"),
+                          teditfmt.manifest_policy())!
+    test.assert(str.contains(teditdoc.render(d3), "\">= 0.9.0\"   # raised 2026-09\n"))
+
+@test
+fn test_rename_moves_the_key_and_leaves_the_value_alone() [io]
+    let d = teditdoc.parse(manifest())!
+    let d2 = teditdoc.rename(d, "dependencies.url-nv",
+                             teditkey.key_auto("url2-nv"))!
+    let out = teditdoc.render(d2)
+
+    test.case("the new key is there with the old value")
+    test.assert(str.contains(out, "url2-nv = \"^0.1.1\"\n"))
+
+    test.case("the old key is gone")
+    test.assert(not teditdoc.contains(d2, "dependencies.url-nv"))
+
+    test.case("one splice — the key's own bytes")
+    test.assert(list.len(teditdoc.edits(d2)) == 1)
+
+@test
+fn test_remove_takes_the_comment_that_documented_the_key() [io]
+    let d = teditdoc.parse(manifest())!
+    let d2 = teditdoc.remove(d, "package.novo")!
+    let out = teditdoc.render(d2)
+
+    test.case("the entry is gone")
+    test.assert(not teditdoc.contains(d2, "package.novo"))
+
+    test.case("and so is the comment written above it, which documented it")
+    test.assert(not str.contains(out, "# The oldest novo this builds on."))
+
+    test.case("the blank line before [docs.pages] stays — it belongs to what follows")
+    test.assert(str.contains(out, "\n[docs.pages]\n"))
+
+    test.case("removing the last key of a table leaves the header")
+    let e = teditdoc.remove(d, "dependencies.url-nv")!
+    test.assert(str.contains(teditdoc.render(e), "[dependencies]"))
+
+@test
+fn test_positions_are_the_keys_and_are_one_based() [io]
+    let d = teditdoc.parse(manifest())!
+
+    test.case("the first key of the file is line 2, column 1")
+    let p = teditdoc.position_of(d, "package.name")
+    test.assert(p.0 == 2)
+    test.assert(p.1 == 1)
+
+    test.case("a quoted key inside a later table is found by path, not by a line scan")
+    let q = teditdoc.position_of(d, "docs.pages.\"README.md\"")
+    test.assert(q.0 == 8)
+
+    test.case("a path that names nothing answers (0, 0) rather than guessing")
+    let z = teditdoc.position_of(d, "package.absent")
+    test.assert(z.0 == 0)
+    test.assert(z.1 == 0)
+
+    test.case("span_of answers the VALUE's bytes")
+    match teditdoc.span_of(d, "package.name")
+        None    => test.assert(false)
+        Some(s) => test.assert(s.1 > s.0)
+
+@test
+fn test_a_hash_inside_a_string_is_not_a_comment() [io]
+    // The case a line-scanning editor gets wrong, and the reason a
+    // manifest editor needs a parser rather than a regular expression.
+    let src = "[package]\ndescription = \"colours like #ff8800\"\nname = \"demo\"\n"
+    let d = teditdoc.parse(src)!
+
+    test.case("the description is one string, hash and all")
+    test.assert(teditdoc.str_at(d, "package.description") == Some("colours like #ff8800"))
+
+    test.case("and the key after it was parsed")
+    test.assert(teditdoc.contains(d, "package.name"))
+
+    test.case("no comment was found on that line")
+    test.assert(teditdoc.comment_at(d, "package.description") == "")
+
+@test
+fn test_render_len_and_render_agree() [io]
+    let d = teditdoc.parse(manifest())!
+    test.case("the length is answered without building the string")
+    test.assert(teditdoc.render_len(d) == str.len(manifest()))
+
+    let d2 = teditdoc.insert(d, "dependencies.toml-nv",
+                             tedititem.string_value("^0.0.3"),
+                             teditfmt.manifest_policy())!
+    test.case("and after an edit it is still the render's length")
+    test.assert(teditdoc.render_len(d2) == str.len(teditdoc.render(d2)))
+
+@test
+fn test_paths_and_keys_are_the_documents_own_order() [io]
+    let d = teditdoc.parse(manifest())!
+
+    test.case("keys_of answers document order, not sorted order")
+    let ks = teditdoc.keys_of(d, "package")
+    test.assert(list.len(ks) == 3)
+    test.assert(ks[0].name == "name")
+    test.assert(ks[1].name == "version")
+    test.assert(ks[2].name == "novo")
+
+    test.case("paths lists tables before their entries")
+    let ps = teditdoc.paths(d)
+    test.assert(list.len(ps) > 6)
+    test.assert(ps[0] == "package")
+
+@test
+fn test_a_document_that_is_not_toml_is_refused_with_a_position() [io]
+    test.case("an unterminated string is a parse failure at its own line")
+    match teditdoc.parse("[package]\nname = \"demo\n")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a duplicate key is refused — TOML 1.0 makes it an error")
+    match teditdoc.parse("a = 1\na = 2\n")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a reopened table is refused")
+    match teditdoc.parse("[a]\nx = 1\n[b]\ny = 2\n[a]\nz = 3\n")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)

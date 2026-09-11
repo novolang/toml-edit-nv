@@ -1,0 +1,239 @@
+// teditfmt.nv — the policy for what the editor ADDS.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// AN EDITOR NEEDS A FORMATTER FOR EXACTLY ONE THING.  Everything that
+// was already in the document renders as the bytes it was written as,
+// so no policy applies to it: `tedititem.TeditSpan` is not something a
+// style can change.  The policy decides what the bytes of a NEW entry
+// look like — the spaces around its `=`, whether its string is basic
+// or literal, the indentation under a header, where in the table it
+// lands, and whether a new sub-table is written inline or as a header
+// of its own.
+//
+// Saying that out loud is worth a paragraph, because the usual
+// arrangement in a TOML library is a formatter with a preserve flag,
+// and it is the wrong way round: a formatter that preserves is one
+// bug away from reformatting a file, and the bug is invisible until it
+// has happened to somebody's manifest.  Here there is no path from a
+// policy to an existing byte at all.
+//
+// THE POLICY CAN BE READ OFF THE DOCUMENT, and that is the call worth
+// having.  `infer(d)` looks at what the file already does — does it
+// put spaces around `=`, does it indent under a header, does it quote
+// its keys, how long is an array before it breaks — and answers the
+// policy that makes a new line look like it belongs.  A tool that adds
+// a dependency to a manifest written one way and a manifest written
+// another way should produce two lines that each match their file, and
+// a fixed policy cannot do that.  `defaults()` is what `infer` falls
+// back to for a document that gave no evidence.
+//
+// WHAT A POLICY IS NOT ALLOWED TO DO is decide the ORDER of keys that
+// are already there.  `TeditPlacement` says where a new entry goes and
+// has no variant that sorts a table, deliberately: sorting is a whole-
+// file rewrite wearing an insert's clothes, and a caller who wants it
+// renders the keys themselves.
+
+// Where a new entry lands in its table.
+//
+// Three answers, and no fourth that sorts.
+pub enum TeditPlacement
+    // After the last entry of the table, before the next header.  What
+    // `novo pkg add` wants: the table reads in the order entries were
+    // added, and a reviewer sees one line appended.
+    TeditAppend
+    // Before the first entry of the table.
+    TeditPrepend
+    // In the position the existing keys' own order implies, when that
+    // order is one this package can recognise — byte-ascending by
+    // decoded name.  A table that is NOT in that order gets
+    // `TeditAppend` instead, rather than a guess: a half-sorted table
+    // has no correct insertion point, and inventing one moves a line a
+    // person put where they wanted it.
+    TeditSorted
+
+// How a new table is spelled.
+pub enum TeditTableStyle
+    // `[a.b]` on a line of its own.
+    TeditHeaderTable
+    // `b = { … }` inside its parent.
+    TeditInlineStyle
+    // Whatever the parent table's existing sub-tables do, and
+    // `TeditHeaderTable` when it has none.  The default, because a
+    // manifest whose tables are all headers should not grow a brace.
+    TeditMatchDocument
+
+// How a new string is quoted.
+pub enum TeditStringStyle
+    // `"…"`, with escapes.  The default: it can hold any string.
+    TeditBasicString
+    // `'…'`, with none.  Used when the value contains a backslash and
+    // no single quote — a Windows path, a regular expression — because
+    // the basic spelling of those is unreadable.
+    TeditLiteralString
+    // `"""…"""`, for a value containing a newline.  A value with a
+    // newline in it cannot be written any other way, so this is
+    // reached whether or not it is asked for.
+    TeditMultilineString
+    // Basic unless a literal reads better by the rule above.  The
+    // default.
+    TeditAutoString
+
+// Everything the editor decides when it writes something new.
+//
+// A value the caller owns, so two tools editing the same file can
+// disagree about style and neither has to patch the other.
+pub struct TeditPolicy
+    // Spaces on each side of `=` in a new key-value pair.  `1` is what
+    // every TOML document in this project writes and what the
+    // specification's own examples use; `0` is `key=value`.
+    space_around_eq: Int
+    // Spaces before a `#` that begins a trailing comment.
+    space_before_comment: Int
+    // Bytes of indentation for an entry under a table header.  Zero,
+    // which is what the specification's examples do and what `novo.toml`
+    // does; a document that indents gets a non-zero answer from
+    // `infer`.
+    indent: Int
+    // Blank lines before a new table header.  One separates tables the
+    // way a reader expects; zero is for a document that does not.
+    blank_lines_before_table: Int
+    // Where a new entry goes in its table.
+    placement: TeditPlacement
+    // How a new table is spelled.
+    table_style: TeditTableStyle
+    // How a new string is quoted.
+    string_style: TeditStringStyle
+    // An array with more than this many elements is written one
+    // element per line.  A negative number means never, which is the
+    // default: breaking an array is a formatting decision with no right
+    // answer, and a caller who wants it says so.
+    wrap_arrays_over: Int
+    // Whether a new inline table gets a space inside its braces:
+    // `{ a = 1 }` rather than `{a = 1}`.
+    space_in_braces: Bool
+    // Whether a rendered document ends with a newline when the input
+    // did not.  True, because a file without one is a file every tool
+    // downstream reports a diff on.
+    ensure_trailing_newline: Bool
+    // The keys a new entry's `#` comment is attached to, as a prefix
+    // rather than a suffix.  True puts a supplied comment on its own
+    // line above the entry; false puts it after the value.
+    comment_above: Bool
+
+// The policy this package uses when nothing is known about the
+// document.
+//
+// One space around `=`, no indent, one blank line before a new table,
+// append, header tables, auto strings, no array wrapping, spaces
+// inside braces, a trailing newline, comments above.  Every one of
+// those is what `novo.toml` and the TOML specification's own examples
+// look like.
+//
+// ```novo
+// use teditfmt
+//
+// fn main() [io]
+//     println("${teditfmt.defaults().space_around_eq}")
+// ```
+pub fn defaults() -> TeditPolicy []
+    todo("toml-edit-nv.teditfmt.defaults")
+
+// The policy for editing a `novo.toml`.
+//
+// `defaults()` with `placement` fixed to `TeditAppend` and
+// `table_style` to `TeditHeaderTable` — the two decisions `novo pkg
+// add` must not leave to inference, because a manifest whose
+// `[dependencies]` table happens to be alphabetical today would
+// otherwise start sorting itself, and a manifest with no tables at all
+// would grow a brace.
+//
+// Published under a name rather than left to the caller to assemble so
+// that the toolchain and a third-party tool editing the same file
+// agree by construction.
+pub fn manifest_policy() -> TeditPolicy []
+    todo("toml-edit-nv.teditfmt.manifest_policy")
+
+// The tightest legal spelling: no spaces anywhere they are optional.
+//
+// For a generated file nobody reads.
+pub fn compact_policy() -> TeditPolicy []
+    todo("toml-edit-nv.teditfmt.compact_policy")
+
+// Whether a policy would write a byte differently from another.
+//
+// A comparison, published because a tool that caches a rendered
+// document needs to know when its cache is stale and comparing two
+// structs field by field is the kind of code that goes wrong when a
+// field is added.
+pub fn policy_eq(a: TeditPolicy, b: TeditPolicy) -> Bool []
+    todo("toml-edit-nv.teditfmt.policy_eq")
+
+// ── Reading a policy off a document ──────────────────────────────────
+
+// What a document does, as a policy — so a new line looks like it
+// belongs.
+//
+// Every field is answered from evidence in the document and falls back
+// to `defaults()` where there is none.  The evidence is counted rather
+// than sampled: a file with twelve `a = 1` pairs and one `b=2` is a
+// file that puts spaces around `=`, and reading the first pair would
+// have said the opposite for a file that happened to open with the
+// exception.
+//
+// `TeditSorted` is inferred only when EVERY table in the document is
+// in byte-ascending key order and at least one has three keys — two
+// keys are in order half the time by accident.
+//
+// `source` is the document's own text; `teditdoc.policy_of` is the
+// call that already has it.
+pub fn infer(source: Str) -> TeditPolicy []
+    todo("toml-edit-nv.teditfmt.infer")
+
+// How confident `infer` is about one document, from 0 to 100.
+//
+// A document of four lines gives almost no evidence, and a tool that
+// showed a person a preview of its edit would like to know that before
+// it claims the edit matches the file's style.  Zero means every field
+// came from `defaults()`.
+pub fn infer_confidence(source: Str) -> Int []
+    todo("toml-edit-nv.teditfmt.infer_confidence")
+
+// ── Rendering under a policy ─────────────────────────────────────────
+//
+// The four calls that turn a value and a policy into bytes.  They are
+// public because a caller assembling a line by hand — a generator
+// writing a whole file rather than editing one — wants exactly these
+// and should not have to build a document to get them.
+
+// A string as it would be written under a policy: quotes, escapes and
+// all.
+//
+// ```novo
+// use teditfmt
+//
+// fn main() [io]
+//     println(teditfmt.quote_string("^0.0.3", teditfmt.defaults()))
+// ```
+pub fn quote_string(value: Str, p: TeditPolicy) -> Str []
+    todo("toml-edit-nv.teditfmt.quote_string")
+
+// Which string style a policy would actually use for one value.
+//
+// `TeditAutoString` resolves here, so a caller can ask what it will
+// get without rendering.
+pub fn string_style_for(value: Str, p: TeditPolicy) -> TeditStringStyle []
+    todo("toml-edit-nv.teditfmt.string_style_for")
+
+// The separator between a key and a value under a policy: the spaces,
+// the `=`, the spaces.
+pub fn eq_separator(p: TeditPolicy) -> Str []
+    todo("toml-edit-nv.teditfmt.eq_separator")
+
+// The indentation a new entry at a given depth carries.
+//
+// Depth is in table headers, not in dotted segments: a key inside
+// `[a.b]` is at depth 1 because there is one header above it, which is
+// what a document that indents actually indents by.
+pub fn indent_for(depth: Int, p: TeditPolicy) -> Str []
+    todo("toml-edit-nv.teditfmt.indent_for")

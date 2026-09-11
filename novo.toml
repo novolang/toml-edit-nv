@@ -1,0 +1,51 @@
+[package]
+name        = "toml-edit-nv"
+version     = "0.0.1"
+description = "Format-preserving TOML editing: a document parsed into items that each remember the exact bytes they were written as, edited by dotted path with get, set, insert, remove and rename, and rendered back with every byte nobody touched identical.  The splice list an edit produced is a value, so `add one dependency line and move nothing else` is an assertion rather than a hope.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A document is a string the caller already holds, an edit is
+# arithmetic over byte ranges into it, and rendering is a
+# concatenation.  Nothing is read, nothing is written, and the one
+# place a stream could have entered — writing an edited document out —
+# is `teditdoc.render_to<W: Write[e]>`, which is charged what the
+# caller's writer costs and spends nothing of its own.
+layer       = "core"
+
+category    = "tooling"
+
+tags        = ["toml", "toml-edit", "format-preserving", "manifest", "config", "editing", "round-trip", "sans-io"]
+repository  = "https://github.com/novolang/toml-edit-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "A document that remembers how it was written, and an edit you can count the bytes of"
+
+[dependencies]
+# toml-nv, for the VALUE TREE and for nothing else.
+#
+# `teditconv` is the whole of the dependency: `to_value` reads an
+# edited document out as a `TomlValue` for a caller that wants data,
+# `apply_value` writes one back in under a policy, and `value_at`
+# answers one subtree.  Every other module here is about bytes and
+# never names a toml-nv type.
+#
+# The two packages are NOT two spellings of one thing, and § The
+# overlap with toml-nv in the README is the argument.  toml-nv's
+# `TomlValue` is a value — two trees holding the same data are the same
+# tree — and this package's `TeditDoc` is a document, where two files
+# holding the same data with different comments are different files.
+# The direction of the dependency follows from that: a document can
+# always answer a value, and a value cannot answer a document.
+toml-nv = "^0.0.3"

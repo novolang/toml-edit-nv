@@ -1,0 +1,124 @@
+// tediterr.nv — what this package refuses, and why each refusal is a
+// refusal rather than a repair.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE RULE THIS MODULE FOLLOWS.  An editor that repairs what it does
+// not understand writes a file the author did not write.  So a parse
+// that cannot account for a byte refuses, `set` on an absent path
+// refuses, `insert` on a present one refuses, and a `raw_value` whose
+// spelling does not read back as the kind it claimed refuses at the
+// edit rather than at the next reader.  There is exactly one lenient
+// call in the package — `upsert` — and it is lenient by name.
+//
+// A PARSE ERROR CARRIES A POSITION AND AN EDIT ERROR DOES NOT, which
+// is not an omission: a path that names nothing has no line in the
+// file, and a position invented for it would point at something the
+// reader would then try to fix.  `error_line` answers 0 for those, and
+// `render` leaves the colons out rather than printing zeros.
+
+use teditkey
+
+// What went wrong.
+pub enum TeditError
+    // The text is not TOML.  `why` is the specification's own
+    // vocabulary for the fault — "unterminated string", "expected
+    // `=`", "duplicate key" — so a caller rendering it does not have
+    // to translate.
+    TeditParseFailed(line: Int, col: Int, why: Str)
+    // A path names no entry, on a call that requires one.
+    TeditNoSuchPath(path: Str)
+    // A path names an entry, on a call that requires it to be absent.
+    TeditPathExists(path: Str)
+    // A path's parent is not a table, so the entry could not be put
+    // anywhere: `a.b` where `a` is an integer.  `found` is the
+    // parent's kind under TOML's own name.
+    TeditNotATable(path: Str, found: Str)
+    // The path itself is malformed.  The key error says where in the
+    // path text and why.
+    TeditBadPath(path: Str, why: Str)
+    // A `raw_value` whose spelling does not read back as the kind it
+    // claimed.  Caught at the edit rather than at the next reader,
+    // which is the whole reason `set` parses what it is given.
+    TeditBadValue(path: Str, repr: Str, want: Str)
+    // An inline-table `TeditNewValue` whose `keys` and `items` are
+    // different lengths.  A constructor cannot answer a `Result`
+    // without making every nested call unwrap, so the check lands
+    // here, at the edit that would have written it.
+    TeditKeyCountMismatch(path: Str, keys: Int, values: Int)
+    // A `retype` that would change what the file means and was not
+    // told it may: an inline table has no spelling that can contain a
+    // header table, so `[a.b.c]` cannot become `b = { c = … }` while
+    // `[a.b.d]` stays where it is.
+    TeditWouldChangeShape(path: Str, from: Str, to: Str)
+
+// `TeditError` is an `Error`, which is what lets `Result<T, TeditError>`
+// exist at all (SPEC § 3.4) and what makes `!` propagate one out of a
+// caller with an error type of its own.
+impl Error for TeditError
+    // The one-line message, for a caller printing rather than
+    // matching.
+    //
+    // The sentence names the rule and not the parser's state, and it
+    // does NOT carry the position: `error_line` and `error_col` are
+    // separate so a caller renders `file:line:col: message` in
+    // whatever shape its own diagnostics have.
+    fn message(self) -> Str
+        todo("toml-edit-nv.TeditError.message")
+
+// The 1-based line the error refers to, or 0 for the seven reasons
+// that have no position.
+//
+// ```novo
+// use tediterr
+//
+// fn main() [io]
+//     println("${tediterr.error_line(TeditNoSuchPath("a.b"))}")
+// ```
+pub fn error_line(e: TeditError) -> Int []
+    todo("toml-edit-nv.tediterr.error_line")
+
+// The 1-based byte column within that line, or 0.
+pub fn error_col(e: TeditError) -> Int []
+    todo("toml-edit-nv.tediterr.error_col")
+
+// The path the error is about, or the empty string for a parse fault.
+//
+// Published so a tool can group its refusals by entry without matching
+// eight variants.
+pub fn error_path(e: TeditError) -> Str []
+    todo("toml-edit-nv.tediterr.error_path")
+
+// Whether the error is about the document's text rather than about an
+// edit.
+//
+// The split a caller acts on: a parse fault means the file is not TOML
+// and nothing can be done to it, and everything else means the call
+// asked for something the file does not have.
+pub fn is_parse_error(e: TeditError) -> Bool []
+    todo("toml-edit-nv.tediterr.is_parse_error")
+
+// `file:line:col: message`, the form an editor's error list parses.
+//
+// `file` is the caller's — this package never learned a filename,
+// because it never opened anything.  A reason with no position renders
+// as `file: message`, with the colons omitted rather than filled with
+// zeros.
+//
+// ```novo
+// use tediterr
+//
+// fn main() [io]
+//     println(tediterr.render(TeditNoSuchPath("a.b"), "novo.toml"))
+// ```
+pub fn render(e: TeditError, file: Str) -> Str []
+    todo("toml-edit-nv.tediterr.render")
+
+// A `TeditBadPath` built from a key error, with the path text it was
+// found in.
+//
+// The one crossing between the two error types, in one place, so that
+// `teditkey`'s offsets do not have to be re-derived at every call site
+// that propagates one.
+pub fn from_key_error(path: Str, e: teditkey.TeditKeyError) -> TeditError []
+    todo("toml-edit-nv.tediterr.from_key_error")

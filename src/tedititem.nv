@@ -1,0 +1,430 @@
+// tedititem.nv — the load-bearing interface: a piece of a document is
+// either bytes that were already there or bytes this editor made, and
+// the type says which.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE ONE IDEA.  `TeditRaw` has two variants and no third:
+//
+//     TeditSpan(start, end)   bytes [start, end) of the original text
+//     TeditMade(text)         bytes this editor produced
+//
+// Every key, every value, every run of whitespace and every comment in
+// a parsed document is one of the two.  Rendering is therefore a
+// concatenation of raws in order, and the property the whole package
+// exists for —
+//
+//     a byte the caller did not edit comes back identical
+//
+// is STRUCTURAL rather than promised.  It cannot be broken by an
+// implementation that reflows a line or normalises a quote, because
+// doing either would mean replacing a `TeditSpan` with a `TeditMade`,
+// and `origin_of` reports that to the caller who asked.  A test can
+// assert the property directly — `teditdoc.made_count(d) == 1` after
+// one `insert` — instead of comparing two files and hoping the diff
+// noticed.
+//
+// WHY NOT KEEP THE WHOLE TEXT AND PATCH SPANS.  That is the other
+// design, and it is the one toml-nv's `tomledit` takes: hold the
+// source, rewrite the span a `set` names, re-parse.  It gives the same
+// answer for `set` and cannot give one at all for the three calls this
+// package exists for.
+//
+//   * `insert` has to decide what whitespace and what newline come WITH
+//     the new entry, and there is no span to patch because the entry
+//     was never there.  A policy has to be consulted, and a design with
+//     no item model has nowhere to consult one from.
+//   * `rename` moves a key and leaves the value, its decor and its
+//     trailing comment exactly where they were.  Over raw text that is
+//     two splices whose offsets depend on each other.
+//   * a `[dependencies]` table that does not exist yet has to be
+//     created in the right PLACE — after the last table of the file,
+//     not in the middle of `[package]` — and "the right place" is a
+//     statement about the item tree.
+//
+// So the model is a tree of items, each carrying its decor, and the
+// text is what the tree renders to rather than what it is.
+//
+// WHAT AN ITEM IS.  TOML has three kinds of thing that can hold other
+// things and they are not interchangeable, so they are three variants
+// rather than one with a flag: a standard table introduced by a
+// `[header]`, an inline table written `{ a = 1 }`, and an array of
+// tables written `[[header]]`.  Turning one into another changes the
+// file's meaning, so nothing here does it silently — `retype` is the
+// one call that does, it takes a policy, and it answers a `Result`.
+//
+// WHAT A VALUE IS.  A scalar keeps its REPR — the bytes it was
+// written as — beside its decoded meaning, because `0x2A`, `42` and
+// `4_2` are one integer and three files.  A caller that reads
+// `int_of` gets 42; a caller that renders gets its own bytes back.
+// `toml_edit`'s `Formatted<T>` is the same arrangement and for the
+// same reason.
+
+use teditkey
+
+// Where a piece of a rendered document came from.
+//
+// The distinction a caller asserts on.  `TeditOriginal` means these
+// exact bytes were in the input; `TeditProduced` means this package
+// wrote them, under a `TeditPolicy` the caller chose.
+pub enum TeditOrigin
+    // Copied out of the parsed text, byte for byte.
+    TeditOriginal
+    // Written by this package.  Everything an edit added, and nothing
+    // else, is this.
+    TeditProduced
+
+// A run of bytes in a document: either a range of the original text or
+// text this editor made.
+//
+// THE LOAD-BEARING TYPE.  Two variants, no third, and every byte a
+// render emits comes out of one of them.
+//
+// A span rather than a copied `Str` for the original half, so a
+// document of any size costs one string and a list of integer pairs —
+// and so that `origin_of` can answer without comparing text.
+pub enum TeditRaw
+    // Bytes `[start, end)` of the document's original text, verbatim.
+    // Half-open, so an empty run at a position is expressible — which
+    // is what a key with no decor in front of it has.
+    TeditSpan(start: Int, end: Int)
+    // Bytes this editor produced.  Nothing in a freshly parsed
+    // document is one of these; every one in a rendered document is a
+    // place the caller asked for a change.
+    TeditMade(text: Str)
+
+// The whitespace and comments around an item, kept so that rendering
+// is the identity.
+//
+// `toml_edit` calls this a decor and the name is worth keeping: it is
+// everything that is between the meaningful tokens, and losing it is
+// exactly what makes a rewritten config file unreadable.
+//
+// `prefix` is what came before the item and after the previous one —
+// the blank lines above a table header, the indentation before a key,
+// the comment on its own line that documents the entry below it.
+// `suffix` is what came after the item on the same line — the spaces
+// before a trailing comment, and the comment.
+//
+// A NEWLINE BELONGS TO THE PREFIX OF WHAT FOLLOWS, not to the suffix
+// of what precedes.  The rule is arbitrary and stating it is not: with
+// the other convention, deleting the last key of a table takes the
+// blank line that separated the table from the next one with it, and
+// the file closes up by one line every time a tool runs.
+pub struct TeditDecor
+    prefix: TeditRaw
+    suffix: TeditRaw
+
+// What kind of thing an item is.
+//
+// A reader dispatches on this before asking for a payload, so the four
+// accessors below (`value_of`, `table_of`, `array_of`, `pairs_of`) each
+// have one kind they answer for and `None` for the rest.
+pub enum TeditItemKind
+    // A key with a value: `port = 8080`.
+    TeditKeyValue
+    // A table introduced by a header: `[server]`.
+    TeditStandardTable
+    // A table written between braces: `server = { port = 8080 }`.
+    TeditInlineTable
+    // One element of an array of tables: `[[bin]]`.
+    TeditArrayTable
+    // The implicit table a dotted header creates.  `[a.b.c]` declares
+    // `a` and `a.b` without either appearing in the file, and an
+    // implicit table renders as nothing at all — which is why it is a
+    // kind rather than an empty standard table.
+    TeditImplicitTable
+
+// What kind of value a scalar or container is, under TOML's own names.
+//
+// `TeditValueKind` and `tomlnode.TomlType` answer the same question
+// about the same data and are deliberately two types: this one
+// distinguishes the two table SPELLINGS, which toml-nv's correctly does
+// not, because to a value tree they are the same table.
+pub enum TeditValueKind
+    TeditStr
+    TeditInt
+    TeditFloat
+    TeditBool
+    TeditOffsetDateTime
+    TeditLocalDateTime
+    TeditLocalDate
+    TeditLocalTime
+    TeditArray
+    TeditInlineTableValue
+
+// One entry of a document: a key, what it holds, and the bytes around
+// both.
+//
+// `key` is absent for the elements of an array — an array has
+// positions and not names — and present for everything else.
+//
+// The children are held by INDEX into the document's own item list
+// rather than inline, because a key-value pair inside a table inside
+// an array of tables is three levels of nesting and a tree of boxed
+// structs would make every walk a chain of allocations.  `teditdoc` is
+// what owns the list; this module is what one entry in it means.
+pub struct TeditItem
+    kind: TeditItemKind
+    // The key as it was written, with its own quoting style, or an
+    // empty key for an array element.  `teditkey.is_empty` is the
+    // check.
+    key: teditkey.TeditKey
+    // The bytes around the item.
+    decor: TeditDecor
+    // For a key-value pair: the value.  For a table: the header line.
+    // For an implicit table: an empty `TeditSpan`.
+    repr: TeditRaw
+    // What the value is, when the item holds one.
+    value_kind: TeditValueKind
+    // Indices into the document's item list, in document order.  Empty
+    // for a key-value pair whose value is a scalar.
+    children: [Int]
+
+// A value under construction, before it is put into a document.
+//
+// `insert` and `set` take one of these rather than a `TeditItem`,
+// because a caller building a new entry has no decor to supply and no
+// place in the item list to name — both are the document's business and
+// the policy's.
+pub struct TeditNewValue
+    kind: TeditValueKind
+    // The bytes to write.  A caller that wants control over the exact
+    // spelling — `0x2A` rather than `42`, a literal string rather than
+    // a basic one — writes them here, and the constructors below are
+    // the shorthand for the ordinary case.
+    repr: Str
+    // The children, for an array or an inline table.  Empty otherwise.
+    items: [TeditNewValue]
+    // The keys of `items`, for an inline table.  Empty for an array.
+    keys: [Str]
+
+// ── Reading a raw ────────────────────────────────────────────────────
+
+// The bytes a raw stands for, against the document text it came from.
+//
+// `source` is the ORIGINAL text of the document the raw was read out
+// of.  Passing a different string answers a different, wrong run of
+// bytes, which is why `teditdoc.raw_str` exists and takes the document
+// instead — this is the primitive under it, published because a caller
+// walking a document's items already holds the source.
+//
+// ```novo
+// use tedititem
+//
+// fn main() [io]
+//     let r = TeditSpan(start: 0, end: 4)
+//     println(tedititem.raw_text(r, "port = 8080"))
+// ```
+pub fn raw_text(r: TeditRaw, source: Str) -> Str []
+    todo("toml-edit-nv.tedititem.raw_text")
+
+// How many bytes a raw renders to.
+//
+// Answers without building the string, so sizing a buffer for
+// `teditdoc.render_into` costs a walk and no allocation.
+pub fn raw_len(r: TeditRaw, source: Str) -> Int []
+    todo("toml-edit-nv.tedititem.raw_len")
+
+// Whether a raw is bytes of the original or bytes this package made.
+//
+// The assertion the package is designed around.  A render whose every
+// raw answers `TeditOriginal` is byte-identical to its input, and one
+// with three `TeditProduced` raws changed exactly three runs.
+pub fn origin_of(r: TeditRaw) -> TeditOrigin []
+    todo("toml-edit-nv.tedititem.origin_of")
+
+// Whether a raw stands for no bytes at all.
+//
+// True for `TeditSpan(n, n)` and for `TeditMade("")`, which are the
+// same rendered output and two different statements about where it
+// came from — so this is a question about LENGTH and `origin_of` is
+// the question about provenance.
+pub fn raw_empty(r: TeditRaw, source: Str) -> Bool []
+    todo("toml-edit-nv.tedititem.raw_empty")
+
+// A raw for text this package made.
+//
+// Every constructor below routes through this one, so there is a single
+// place where produced bytes enter a document.
+pub fn made(text: Str) -> TeditRaw []
+    todo("toml-edit-nv.tedititem.made")
+
+// ── Reading an item ──────────────────────────────────────────────────
+
+// The decor around an item.
+pub fn decor_of(it: TeditItem) -> TeditDecor []
+    todo("toml-edit-nv.tedititem.decor_of")
+
+// An item with different decor, and everything else untouched.
+//
+// The call a caller makes to move a comment or change indentation
+// without touching the value — which is the edit a formatter makes and
+// the edit `set` must not make.
+pub fn with_decor(it: TeditItem, d: TeditDecor) -> TeditItem []
+    todo("toml-edit-nv.tedititem.with_decor")
+
+// A decor of no bytes at all, on both sides.
+//
+// What an item inserted into an empty document starts with before a
+// policy is applied to it.
+pub fn empty_decor() -> TeditDecor []
+    todo("toml-edit-nv.tedititem.empty_decor")
+
+// The comment carried in a decor's prefix, without its `#` and without
+// the newline, or the empty string when there is none.
+//
+// A prefix can hold several comment lines and any amount of blank
+// space; this answers them joined by newlines, which is what a caller
+// showing a key's documentation wants.  `prefix_comment_lines` is the
+// same thing unjoined.
+pub fn prefix_comment(d: TeditDecor, source: Str) -> Str []
+    todo("toml-edit-nv.tedititem.prefix_comment")
+
+// Each comment line in a decor's prefix, in order, `#` stripped.
+pub fn prefix_comment_lines(d: TeditDecor, source: Str) -> [Str] []
+    todo("toml-edit-nv.tedititem.prefix_comment_lines")
+
+// The trailing comment on an item's own line, `#` stripped, or the
+// empty string when there is none.
+pub fn suffix_comment(d: TeditDecor, source: Str) -> Str []
+    todo("toml-edit-nv.tedititem.suffix_comment")
+
+// ── Reading a value ──────────────────────────────────────────────────
+
+// What kind of value an item holds.
+pub fn kind_of(it: TeditItem) -> TeditValueKind []
+    todo("toml-edit-nv.tedititem.kind_of")
+
+// TOML's own name for a value kind: `string`, `integer`, `float`,
+// `boolean`, `offset date-time`, `local date-time`, `local date`,
+// `local time`, `array`, `table`.
+//
+// The spelling the specification uses, so a diagnostic that names a
+// type names the one a reader will find in it.
+pub fn kind_name(k: TeditValueKind) -> Str []
+    todo("toml-edit-nv.tedititem.kind_name")
+
+// The decoded string of a string item, escapes resolved, or `None`
+// when the item is not a string.
+//
+// DECODED, which is the whole difference between this and `repr`.
+// `path = "C:\\tmp"` reads back as `C:\tmp` here and as `"C:\\tmp"`
+// from `repr_of`, and a caller writing the value into another file
+// wants the first while a caller rendering wants the second.
+pub fn str_of(it: TeditItem, source: Str) -> ?Str []
+    todo("toml-edit-nv.tedititem.str_of")
+
+// The value of an integer item, or `None` when the item is not one.
+//
+// Decodes the four bases TOML admits and strips underscores, so
+// `0x2A`, `0o52`, `0b101010` and `4_2` all answer 42 — and all four
+// render back as themselves.
+pub fn int_of(it: TeditItem, source: Str) -> ?Int []
+    todo("toml-edit-nv.tedititem.int_of")
+
+// The value of a float item, or `None` when the item is not one.
+//
+// `inf`, `-inf` and `nan` are floats in TOML and are answered as such.
+pub fn float_of(it: TeditItem, source: Str) -> ?Float []
+    todo("toml-edit-nv.tedititem.float_of")
+
+// The value of a boolean item, or `None` when the item is not one.
+pub fn bool_of(it: TeditItem, source: Str) -> ?Bool []
+    todo("toml-edit-nv.tedititem.bool_of")
+
+// The bytes an item's value was written as, verbatim.
+//
+// The other half of the pair with `str_of` and friends: this is what
+// renders, that is what the value means.
+pub fn repr_of(it: TeditItem, source: Str) -> Str []
+    todo("toml-edit-nv.tedititem.repr_of")
+
+// Whether an item's value is still the bytes it was parsed from.
+//
+// False after any `set` that touched it, true for every item of a
+// freshly parsed document — so a caller can ask which entries a run of
+// edits actually moved without diffing text.
+pub fn value_untouched(it: TeditItem) -> Bool []
+    todo("toml-edit-nv.tedititem.value_untouched")
+
+// ── Building a new value ─────────────────────────────────────────────
+//
+// The constructors a caller hands to `teditdoc.set` and
+// `teditdoc.insert`.  Each one produces the ORDINARY spelling; a caller
+// who wants another writes `TeditNewValue` itself with its own `repr`,
+// which is why the field is public.
+
+// A string value, quoted and escaped under the policy's string style.
+//
+// The escaping is the policy's and not this call's, because a document
+// written with literal strings should keep getting them — see
+// `teditfmt.TeditStringStyle`.
+//
+// ```novo
+// use tedititem
+//
+// fn main() [io]
+//     let v = tedititem.string_value("^0.0.3")
+//     println(v.repr)
+// ```
+pub fn string_value(text: Str) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.string_value")
+
+// An integer value, in decimal.
+pub fn int_value(n: Int) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.int_value")
+
+// An integer value written in a base: 2, 8, 10 or 16.
+//
+// Any other base is decimal, because TOML has four and inventing a
+// fifth would produce a file no parser reads.
+pub fn int_value_base(n: Int, base: Int) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.int_value_base")
+
+// A float value.
+//
+// The shortest decimal that reads back as the same double, which is
+// what every other TOML writer does and what keeps a round trip from
+// growing digits.
+pub fn float_value(f: Float) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.float_value")
+
+// A boolean value: `true` or `false`, which are TOML's only spellings.
+pub fn bool_value(b: Bool) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.bool_value")
+
+// An array value, rendered inline under the policy.
+//
+// An array of arrays is this call nested, and an array long enough to
+// want one element per line is the policy's `wrap_arrays_over`
+// deciding, not this call's.
+pub fn array_value(items: [TeditNewValue]) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.array_value")
+
+// An inline table value: `{ a = 1, b = 2 }`.
+//
+// `keys` and `values` are positional pairs and must be the same
+// length; a mismatch is a refusal from `teditdoc.set`, not from here,
+// because a constructor that answered a `Result` could not be nested
+// inside another constructor without unwrapping at every level.
+pub fn inline_table_value(keys: [Str], values: [TeditNewValue]) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.inline_table_value")
+
+// A value written exactly as the caller spells it.
+//
+// The escape hatch, and the reason the package does not need a
+// constructor per exotic spelling: a caller who wants `1979-05-27T07:32:00Z`
+// or a multi-line basic string writes the bytes and says what kind they
+// are.  The bytes are NOT validated here — `teditdoc.set` parses them
+// back and refuses what does not read as the declared kind, so a typo
+// is caught at the edit rather than at the next reader.
+pub fn raw_value(kind: TeditValueKind, repr: Str) -> TeditNewValue []
+    todo("toml-edit-nv.tedititem.raw_value")
+
+// Whether a new value's spelling parses as the kind it claims.
+//
+// What `teditdoc.set` runs over a `raw_value` before it accepts it,
+// published so a caller can ask first.
+pub fn new_value_ok(v: TeditNewValue) -> Bool []
+    todo("toml-edit-nv.tedititem.new_value_ok")

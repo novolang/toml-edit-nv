@@ -1,0 +1,216 @@
+// teditsurface_tests.nv — the calls the three suites beside this one do
+// not reach: the byte-oriented renders, the index-shaped reads, the
+// error accessors, and the two edits that reformat on purpose.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: toml-edit-nv.<module>.<fn>`.
+//
+// A SUITE OF ITS OWN, rather than lines appended to the others,
+// because these are not the calls a reader should meet first. The
+// worked example is in `teditdoc_tests.nv`, the load-bearing type is in
+// `tedititem_tests.nv`, and this is the rest of the surface held to the
+// same standard.
+
+use std.test
+use std.list
+use std.str
+use std.bytes
+use teditdoc
+use tedititem
+use teditkey
+use teditfmt
+use tediterr
+
+fn src() -> Str
+    let lines = ["[server]", "host = \"localhost\"", "port = 8080",
+                 "debug = true", "ratio = 0.5", "tags = [\"a\", \"b\"]", ""]
+    list.join(lines, "\n")
+
+@test
+fn test_the_byte_renders_answer_the_same_document() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("bytes in and text in are the same document")
+    let b = teditdoc.parse_bytes(bytes.from_str(src()))!
+    test.assert(teditdoc.render(b) == teditdoc.render(d))
+
+    test.case("render_bytes is render, as bytes")
+    test.assert(bytes.to_str(teditdoc.render_bytes(d)) == src())
+
+    test.case("render_into appends at the offset the caller names")
+    let buf = bytes.zeros(teditdoc.render_len(d) + 4)
+    let out = teditdoc.render_into(buf, 0, d)
+    test.assert(bytes.len(out) >= teditdoc.render_len(d))
+
+@test
+fn test_writing_to_a_sink_costs_the_sinks_effects_and_not_this_packages() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("an in-memory buffer charges nothing, and the write succeeds")
+    let w = Buffer.new()
+    match teditdoc.render_to(w, d)
+        None    => test.assert(true)
+        Some(_) => test.assert(false)
+
+@test
+fn test_the_index_shaped_reads_are_what_a_walk_uses() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("index_of answers a position into the item list")
+    let i = teditdoc.index_of(d, "server.port")
+    test.assert(i > 0)
+
+    test.case("and a path that names nothing answers -1 rather than 0, which is the root")
+    test.assert(teditdoc.index_of(d, "server.absent") == -1)
+
+    test.case("item_at reads it back")
+    match teditdoc.item_at(d, i)
+        None     => test.assert(false)
+        Some(it) => test.assert(tedititem.kind_of(it) == TeditInt)
+
+    test.case("an index past the end answers None rather than stopping the program")
+    match teditdoc.item_at(d, 9999)
+        None    => test.assert(true)
+        Some(_) => test.assert(false)
+
+    test.case("raw_str reads a raw against this document's own source")
+    match teditdoc.item_at(d, i)
+        None     => test.assert(false)
+        Some(it) => test.assert(teditdoc.raw_str(d, it.repr) == "8080")
+
+@test
+fn test_every_scalar_kind_reads_back_and_names_itself() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("a boolean")
+    test.assert(teditdoc.bool_at(d, "server.debug") == Some(true))
+
+    test.case("and through the item, which is the same answer")
+    match teditdoc.get(d, "server.debug")
+        None     => test.assert(false)
+        Some(it) =>
+            test.assert(tedititem.bool_of(it, d.original) == Some(true))
+            test.assert(tedititem.kind_name(tedititem.kind_of(it)) == "boolean")
+
+    test.case("a float, under the specification's own name for it")
+    match teditdoc.get(d, "server.ratio")
+        None     => test.assert(false)
+        Some(it) =>
+            test.assert(tedititem.float_of(it, d.original) == Some(0.5))
+            test.assert(tedititem.kind_name(tedititem.kind_of(it)) == "float")
+
+    test.case("an array is a kind, not a scalar that failed to parse")
+    match teditdoc.get(d, "server.tags")
+        None     => test.assert(false)
+        Some(it) => test.assert(tedititem.kind_of(it) == TeditArray)
+
+@test
+fn test_decor_can_be_replaced_without_touching_the_value() [io]
+    let d = teditdoc.parse(src())!
+
+    match teditdoc.get(d, "server.port")
+        None     => test.assert(false)
+        Some(it) =>
+            let moved = tedititem.with_decor(it, tedititem.empty_decor())
+
+            test.case("the value is the same bytes it was")
+            test.assert(tedititem.repr_of(moved, d.original) == "8080")
+
+            test.case("and it is still untouched, because decor is not the value")
+            test.assert(tedititem.value_untouched(moved))
+
+@test
+fn test_the_composite_constructors_nest() [io]
+    test.case("an array of strings")
+    let a = tedititem.array_value([tedititem.string_value("x"),
+                                   tedititem.string_value("y")])
+    test.assert(a.kind == TeditArray)
+    test.assert(list.len(a.items) == 2)
+
+    test.case("a float carries the shortest decimal that reads back as itself")
+    test.assert(tedititem.float_value(0.5).repr == "0.5")
+
+    test.case("an inline table pairs keys with values positionally")
+    let t = tedititem.inline_table_value(["a", "b"],
+                                         [tedititem.int_value(1),
+                                          tedititem.int_value(2)])
+    test.assert(t.kind == TeditInlineTableValue)
+    test.assert(list.len(t.keys) == 2)
+
+    test.case("and a mismatch is caught at the edit, not at the constructor")
+    let bad = tedititem.inline_table_value(["a"], [tedititem.int_value(1),
+                                                   tedititem.int_value(2)])
+    match teditdoc.parse(src())
+        Err(_) => test.assert(false)
+        Ok(d)  =>
+            match teditdoc.insert(d, "server.inline", bad, teditfmt.defaults())
+                Ok(_)  => test.assert(false)
+                Err(_) => test.assert(true)
+
+@test
+fn test_the_two_edits_that_reformat_say_so() [io]
+    let d = teditdoc.parse(src())!
+
+    test.case("a comment can be attached, and read back")
+    let c = teditdoc.set_comment(d, "server.port", "the listen port",
+                                 teditfmt.defaults())!
+    test.assert(teditdoc.comment_at(c, "server.port") == "the listen port")
+
+    test.case("and removed with the empty string")
+    let e = teditdoc.set_comment(c, "server.port", "", teditfmt.defaults())!
+    test.assert(teditdoc.comment_at(e, "server.port") == "")
+
+    test.case("retype refuses a change that would move a sibling table")
+    let two = list.join(["[a.b]", "x = 1", "", "[a.c]", "y = 2", ""], "\n")
+    let f = teditdoc.parse(two)!
+    match teditdoc.retype(f, "a.b", TeditInlineStyle, teditfmt.defaults())
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_a_documents_own_habits_can_be_read_off_it() [io]
+    let tight = list.join(["[t]", "a=1", "b=2", "c=3", ""], "\n")
+    let d = teditdoc.parse(tight)!
+
+    test.case("policy_of is infer over the document's own text")
+    test.assert(teditdoc.policy_of(d).space_around_eq == 0)
+
+    test.case("which is not the policy a manifest edit pins")
+    test.assert(not teditfmt.policy_eq(teditdoc.policy_of(d),
+                                       teditfmt.manifest_policy()))
+
+@test
+fn test_an_error_says_where_and_a_refusal_says_which_path() [io]
+    test.case("a parse fault carries a position and is about the text")
+    match teditdoc.parse("[package]\nname = \"demo\n")
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            test.assert(tediterr.is_parse_error(e))
+            test.assert(tediterr.error_line(e) > 0)
+            test.assert(tediterr.error_col(e) > 0)
+            test.assert(tediterr.error_path(e) == "")
+            test.assert(str.contains(tediterr.render(e, "novo.toml"), "novo.toml:"))
+
+    test.case("an edit refusal carries the path and no position")
+    let d = teditdoc.parse("a = 1\n")!
+    match teditdoc.set(d, "absent", tedititem.int_value(2), teditfmt.defaults())
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            test.assert(not tediterr.is_parse_error(e))
+            test.assert(tediterr.error_line(e) == 0)
+            test.assert(tediterr.error_path(e) == "absent")
+            test.assert(not str.contains(tediterr.render(e, "novo.toml"), "novo.toml:0"))
+
+    test.case("a key error crosses into a path error in one place")
+    match teditkey.path_segments("a..b")
+        Ok(_)  => test.assert(false)
+        Err(k) =>
+            let p = tediterr.from_key_error("a..b", k)
+            test.assert(tediterr.error_path(p) == "a..b")
+
+@test
+fn test_path_of_writes_the_keys_spellings_back() [io]
+    test.case("a key list round-trips through its own rendering")
+    let ks = [teditkey.key("docs", TeditBareKey),
+              teditkey.key("README.md", TeditBasicKey)]
+    test.assert(teditkey.path_of(ks) == "docs.\"README.md\"")
