@@ -1,303 +1,288 @@
 # toml-edit-nv
 
-**Status: NOT IMPLEMENTED — interface only.**
+[TOML](https://toml.io/en/v1.0.0) is a configuration file format whose
+specification describes it as "a minimal configuration file format that's easy
+to read due to obvious semantics". This package edits a TOML document without
+disturbing how it was written. A document is parsed into items that each
+remember the exact bytes they came from. An edit rewrites one item. Rendering
+gives back every byte nobody touched, identical.
 
-Every public function below is published with its signature and its
-effect row, and every body is `todo()`. Installing this package works;
-calling it panics with `not implemented`.
+The model is the Rust crate [toml_edit](https://docs.rs/toml_edit), whose
+`Document`, `Item`, `Decor` and `RawString` this package ports.
+[config-nv](https://novo-lang.org/packages/config-nv) reads configuration and
+does not write it. This is the package that writes.
 
-## What this is
+**Status: NOT IMPLEMENTED — interface only.** Every function is declared with
+its full signature, but every body is a `todo()` that panics when called. The
+package is published so its design can be reviewed and depended on before it is
+implemented. Version 0.1.0 will be the first working release.
 
-Format-preserving TOML editing. A document is parsed into items that
-each remember the exact bytes they were written as; an edit rewrites
-one item; rendering the document gives back every byte nobody touched,
-identical.
+## What it is
 
-- `tedititem` — `TeditRaw`, and what a piece of a document is;
-- `teditkey` — keys, their three spellings, and dotted paths;
-- `teditfmt` — the policy for what the editor **adds**, and reading one
-  off a document;
-- `teditdoc` — the document, and the six edits;
-- `tediterr` — what it refuses;
-- `teditconv` — the bridge to toml-nv's value tree.
+A **document** is the text of a TOML file plus a list of the items parsed out
+of it. `TeditDoc` keeps the original text whole and never changes it. Every
+edit answers a new document.
+
+An **item** is one entry: a key, what it holds, and the bytes around both.
+There are five kinds. A key-value pair is `port = 8080`. A standard table is
+introduced by a header line, `[server]`. An inline table is written between
+braces, `server = { port = 8080 }`. An element of an array of tables is written
+`[[bin]]`. An implicit table is the one a dotted header creates: `[a.b.c]`
+declares `a` and `a.b` without either appearing in the file, and an implicit
+table renders as nothing at all.
+
+**Decor** is the whitespace and the comments around an item. The prefix is what
+came before it: the blank lines above a header, the indentation before a key,
+a comment on its own line. The suffix is what came after it on the same line: a
+trailing comment and the spaces before it. `toml_edit` uses the same word.
+
+A **raw** is a run of bytes in a document, and it has two forms and no third. A
+span is a range of the original text. A made raw is text this package produced.
+Rendering is a concatenation of raws in order, so a byte the caller did not edit
+comes back identical because it is the same byte.
+
+A **splice** is one change: an offset range in the original text and the text to
+put there. `teditdoc.edits` answers the list of them, and a caller applying them
+itself needs no bookkeeping.
+
+A **policy** decides what new bytes look like: the spaces around an `=`, how a
+new string is quoted, the indentation under a header, where in a table a new
+entry lands, and whether a new sub-table is written inline or as a header.
+Nothing already in the document is subject to a policy.
+
+## Install
 
 ```
 novo pkg add toml-edit-nv
-novo pkg build
-novo test
 ```
 
-## The one example that will work
+## Example
 
-This is `novo pkg add`. One dependency line goes into a manifest, and
-nothing else in the file moves.
-
-```novo ignore
+```novo
+use std.list
 use teditdoc
 use tedititem
 use teditfmt
 
-fn add_dep(manifest: Str, name: Str, range: Str) -> Str
-    let d  = teditdoc.parse(manifest)!
-    let d2 = teditdoc.insert(d, "dependencies." + name,
-                             tedititem.string_value(range),
-                             teditfmt.manifest_policy())!
-    teditdoc.render(d2)
+fn main() [io]
+    // A manifest as a tool would read it off disk, comments and blank lines and all.
+    let text = "# the package\n[package]\nname = \"app\"\n\n[dependencies]\ntoml-nv = \"^0.0.3\"\n"
+
+    match teditdoc.parse(text)
+        Err(_) => println("that text is not TOML")
+        Ok(d)  =>
+            // Add one dependency. The policy governs only the bytes of the new line.
+            match teditdoc.insert(d, "dependencies.crypto-nv",
+                                  tedititem.string_value("^0.1.3"),
+                                  teditfmt.manifest_policy())
+                Err(_) => println("that key is already there")
+                Ok(d2) =>
+                    // One splice, against the original text's offsets.
+                    println("${list.len(teditdoc.edits(d2))}")
+
+                    // The new line, and the original bytes everywhere else.
+                    println(teditdoc.render(d2))
 ```
 
-And the claim about it is a line of test, not a paragraph of README:
+Build and test with `novo pkg build` and `novo test`. Today `novo test` fails
+on purpose: every test reaches a `not implemented` panic.
 
-```novo ignore
-test.assert(list.len(teditdoc.edits(d2)) == 1)
+## What the package contains
+
+| Module | Contents |
+| --- | --- |
+| `tedititem` | What a piece of a document is: the two forms of a raw, the decor, the five item kinds, a value that keeps its written spelling beside its meaning, and the constructors for a new value. |
+| `teditkey` | Keys, their three spellings, comparing two by meaning, rendering one by style, and dotted paths. |
+| `teditfmt` | The policy for what an edit adds, three named policies, and reading a policy off a document's own habits. |
+| `teditdoc` | The document: parsing, rendering, the reads, and the six edits. |
+| `tediterr` | The eight refusals, with the position for the one that has one. |
+| `teditconv` | The crossing to toml-nv's value tree: reading a document out as data, and writing data back into a document. |
+
+## How to choose an entry point
+
+**A tool changing one entry calls `teditdoc.set`, `insert` or `upsert`.** `set`
+requires the path to exist. `insert` requires it to be absent. `upsert` accepts
+either, and it is the only lenient call in the package.
+
+**A tool restructuring a file calls `remove`, `rename` or `retype`.** `rename`
+moves a key and leaves the value, its decor and its trailing comment where they
+were. `retype` changes a table between its inline and header spellings, and
+refuses a change that would alter what the file means.
+
+**A tool that wants the data rather than the document calls
+`teditconv.to_value`.** It answers toml-nv's value tree with the trivia dropped.
+
+**A tool merging data into a file calls `teditconv.apply_value`.** It writes a
+subtree into an existing document and touches only the entries whose values
+differ, so the diff is the size of the difference rather than the size of the
+file. `replace_value` also deletes what the incoming tree does not carry.
+
+**A tool that needs the changes rather than the text calls `teditdoc.edits`.**
+It answers the splices against the original offsets, ascending, which is what a
+language server sends as a `textDocument/didChange`.
+
+For the output, `render` answers a string, `render_bytes` answers bytes,
+`render_into` appends into a buffer the caller sized, and `render_to` writes
+into any sink implementing `Write`.
+
+## The rules a user needs
+
+1. **A byte the caller did not edit comes back identical.** Every raw in a
+   rendered document is either a span into the original or text this package
+   made. `tedititem.origin_of` says which, and `teditdoc.made_count` counts the
+   second kind.
+2. **`teditdoc.edits` answers splices against the original text's offsets**,
+   ascending. A caller applying them itself applies them back to front.
+3. **The three key spellings name the same key.** TOML admits `name`, `"name"`
+   and `'name'`. `teditkey.key_eq` compares the decoded names, and `render`
+   writes the style the key carries. TOML v1.0.0, "Keys".
+4. **A dot inside a quoted key is not a separator.** `a.b` is two segments and
+   `"a.b"` is one key whose name contains a dot. `teditkey.path_segments`
+   answers a `Result` for this reason, and `path_of` takes a list of keys.
+   TOML v1.0.0, "Keys".
+5. **A scalar keeps the bytes it was written as beside its meaning.** `0x2A`,
+   `42` and `4_2` are one integer and three files. `tedititem.int_of` answers
+   42 for all three, and `repr_of` answers the file's own bytes. TOML v1.0.0,
+   "Integer".
+6. **A string's decoded value and its written form are two different reads.**
+   `path = "C:\\tmp"` is `C:\tmp` from `str_of` and `"C:\\tmp"` from `repr_of`.
+7. **A newline belongs to the prefix of what follows, not to the suffix of what
+   precedes.** Without that rule, deleting the last key of a table takes the
+   blank line above the next table with it, and the file closes up by one line
+   every time a tool runs.
+8. **A policy governs new bytes only.** There is no path in this package from a
+   policy to an existing byte.
+9. **`teditfmt.infer` reads a policy off the document.** It counts what the
+   file already does across the whole file rather than sampling the first pair.
+   `infer_confidence` says how much evidence there was, which is almost none for
+   a four-line file. `defaults()` is the fallback.
+10. **`teditfmt.manifest_policy` pins two decisions.** New entries are appended,
+    and new tables are written as headers. A manifest whose `[dependencies]`
+    happens to be alphabetical today does not start sorting itself, and one with
+    no inline tables does not grow a brace.
+11. **No placement sorts an existing table.** `TeditSorted` inserts in the
+    position the existing order implies, and falls back to appending when the
+    table is not in that order. A half-sorted table has no correct insertion
+    point.
+12. **This package refuses rather than repairs.** A parse that cannot account
+    for a byte refuses. `set` on an absent path refuses. `insert` on a present
+    one refuses. A value whose written form does not read back as the kind it
+    claimed refuses at the edit rather than at the next reader.
+13. **`retype` refuses a change that would alter meaning.** An inline table has
+    no spelling that can contain a header table, so `[a.b.c]` cannot become
+    `b = { c = … }` while `[a.b.d]` stays where it is. TOML v1.0.0, "Inline
+    Table".
+14. **A parse error carries a line and a column, and an edit error does not.**
+    A path that names nothing has no line in the file. `tediterr.error_line`
+    answers 0 for those seven, and `render` leaves the colons out.
+15. **Every edit answers a new document.** Nothing is changed in place, so the
+    document before an edit is still a document and the two can be compared.
+16. **`teditconv.to_value` is onto and not one-to-one.** A standard table and an
+    inline table both become a table. An array of tables becomes an array of
+    tables' values. This is why the other direction needs a policy.
+
+## What is not included
+
+- **Reading or writing a file.** A document is a string the caller already
+  holds. `teditdoc.render_to` writes into a sink the caller supplies, and it
+  costs whatever that sink costs.
+- **A formatter.** There is no call that restyles a document. Formatting
+  applies to new bytes only.
+- **Sorting a table.** Sorting is a whole-file rewrite wearing an insert's
+  clothes. A caller who wants it renders the keys itself.
+- **Editing in place.** Every edit answers a new document, which is what makes
+  the splice list meaningful.
+- **Indexing a document like a map.** `toml_edit`'s `Document` allows
+  `doc["a"]["b"]`, and a missing key there is a panic. Here a path is a value
+  and a miss is a refusal.
+- **Running on a microcontroller.** A document holds its whole source text, one
+  item per entry, and a splice list that grows with the edits. All three are
+  the size of the file. A device that wants to change one field of a
+  configuration blob wants a fixed-capacity surface, not this one.
+- **Parsing TOML into data.** [toml-nv](https://novo-lang.org/packages/toml-nv)
+  does that, and `teditconv` is the crossing between the two.
+
+## Related packages
+
+- [toml-nv](https://novo-lang.org/packages/toml-nv) is the TOML value tree: it
+  answers what a file means, and two files holding the same data with different
+  comments are the same value. This package answers how a file is written, and
+  those two files are different documents. A document can always produce a
+  value, and a value cannot produce a document, so the dependency runs one way.
+  toml-nv also ships a `tomledit` module that preserves formatting across a
+  `set`. It is the smaller path: it has no `rename`, no `retype`, no formatting
+  policy, and no splice list, and it appends a key it has to create rather than
+  placing it. The names `tomledit`, `TomlEdit`, `TomlValue` and `TomlError` are
+  toml-nv's, which is why every module and type here carries a `tedit` or
+  `Tedit` prefix.
+- [config-nv](https://novo-lang.org/packages/config-nv) reads configuration off
+  files, the environment and the command line. It does not write. A program
+  that writes settings back into a file it did not create calls
+  `teditconv.apply_value`.
+- [config-core-nv](https://novo-lang.org/packages/config-core-nv) merges
+  configuration layers and looks values up by dotted path. Its paths and this
+  package's are both dotted and are not the same grammar: this one follows
+  TOML's key rules, with quoting rather than backslash escapes.
+- [changelog-nv](https://novo-lang.org/packages/changelog-nv) does for a
+  `CHANGELOG.md` what this package does for a `novo.toml`. It edits a file and
+  keeps everything it did not change.
+- `std.toml` in the standard library parses TOML into a value and renders a
+  value back. It has no document model, so rendering a parsed file returns the
+  canonical spelling rather than the author's.
+
+## Tests
+
+```bash
+novo test tests                            # every suite
+novo test tests/teditdoc_tests.nv          # the worked example, and one splice
+novo test tests/tedititem_tests.nv         # which bytes came from where
+novo test tests/teditkey_tests.nv          # three spellings of one key
+novo test tests/teditsurface_tests.nv      # the rest of the surface
+novo test tests/teditconv_tests.nv         # the crossing to toml-nv
 ```
 
-## The load-bearing interface: `TeditRaw`
+`novo test` fails on purpose today. Every assertion reaches a `not implemented:
+toml-edit-nv.<module>.<fn>` panic, because every body is a `todo()`. The
+`teditconv` suite reaches panics from toml-nv as well, which is an interface
+too.
 
-```novo ignore
-pub enum TeditRaw
-    TeditSpan(start: Int, end: Int)
-    TeditMade(text: Str)
-```
+The parse cases come from [toml-test](https://github.com/toml-lang/toml-test)'s
+valid and invalid corpora. The preservation cases come from `toml_edit`'s own
+round-trip tests. One fixture is this project's own `novo.toml`, edited and
+compared byte for byte outside the inserted line.
 
-Two variants and no third. Every key, every value, every run of
-whitespace and every comment in a parsed document is one of them, so
-rendering is a concatenation of raws in order and the property the
-whole package exists for —
+The suite asserts that adding a dependency to a manifest produces exactly one
+splice, that a freshly parsed document reports every raw as original, that
+`name`, `"name"` and `'name'` compare equal while each renders as itself, and
+that `teditconv.apply_value` produces a diff the size of the difference rather
+than the size of the file.
 
-> a byte the caller did not edit comes back identical
+## Implementation status
 
-— is **structural** rather than promised. It cannot be broken by an
-implementation that reflows a line or normalises a quote, because doing
-either means replacing a `TeditSpan` with a `TeditMade`, and
-`tedititem.origin_of` reports that to whoever asks. A test asserts the
-property directly (`teditdoc.made_count(d) == 1`) instead of comparing
-two files and hoping the diff noticed.
+| Item | Implemented |
+| --- | --- |
+| `tedititem.TeditOrigin`, `.TeditRaw`, `.TeditDecor`, `.TeditItemKind`, `.TeditValueKind`, `.TeditItem`, `.TeditNewValue` | declared |
+| `tedititem`'s five raw functions, from `raw_text` to `made` | no |
+| `tedititem`'s decor and comment readers, from `decor_of` to `suffix_comment` | no |
+| `tedititem`'s value readers, from `kind_of` to `value_untouched` | no |
+| `tedititem`'s nine value constructors, from `string_value` to `new_value_ok` | no |
+| `teditkey.TeditKeyStyle`, `.TeditKey`, `.TeditKeyError`, `impl Error for TeditKeyError` | declared |
+| `teditkey`'s seventeen functions, from `key` to `key_error_at` | no |
+| `teditfmt.TeditPlacement`, `.TeditTableStyle`, `.TeditStringStyle`, `.TeditPolicy` | declared |
+| `teditfmt`'s ten functions, from `defaults` to `indent_for` | no |
+| `teditdoc.TeditDoc`, `.TeditSplice` | declared |
+| `teditdoc.parse`, `.parse_bytes` | no |
+| `teditdoc.render`, `.render_bytes`, `.render_into`, `.render_len`, `.render_to` | no |
+| `teditdoc.is_untouched`, `.edits`, `.made_count`, `.raw_str` | no |
+| `teditdoc`'s reads, from `get` to `position_of` | no |
+| `teditdoc.set`, `.insert`, `.upsert`, `.remove`, `.rename`, `.retype` | no |
+| `teditdoc.set_comment`, `.comment_at` | no |
+| `tediterr.TeditError`, `impl Error for TeditError` | declared |
+| `tediterr.error_line`, `.error_col`, `.error_path`, `.is_parse_error`, `.render`, `.from_key_error` | no |
+| `teditconv`'s eight functions, from `to_value` to `value_eq` | no |
 
-`teditdoc.edits` is the same fact from the other side: a list of
-splices against the **original** offsets, ascending, which a caller
-applies back to front with no bookkeeping — and which a language server
-sends as a `textDocument/didChange`.
+## Licence
 
-## Why an item tree, and not text with patched spans
+Apache-2.0. See `LICENSE`.
 
-The other design keeps the source, rewrites the span a `set` names, and
-re-parses. toml-nv's `tomledit` is exactly that, and it is a perfectly
-good answer for `set`. It cannot answer the three calls this package
-exists for:
-
-- **`insert`** has to decide what whitespace and what newline come
-  *with* the new entry, and there is no span to patch, because the
-  entry was never there. A policy has to be consulted; a design with no
-  item model has nowhere to consult one from.
-- **`rename`** moves a key and leaves the value, its decor and its
-  trailing comment where they were. Over raw text that is two splices
-  whose offsets depend on each other, with a re-scan of the line to
-  find where the key ended and the whitespace began.
-- **A `[dependencies]` table that does not exist yet** has to be
-  created in the right *place* — at the end of the file, not inside
-  `[package]` — and "the right place" is a statement about the item
-  tree.
-
-So the model is a tree of items each carrying its decor, and the text
-is what the tree renders to rather than what it is.
-
-## The second decision worth arguing: a formatting policy that can be *read off the file*
-
-An editor needs a formatter for exactly one thing: the bytes of
-something new. Nothing that was already in the document is subject to a
-style, because a `TeditSpan` is not something a style can change — so
-unlike every "formatter with a preserve flag", there is no path in this
-package from a policy to an existing byte.
-
-What the policy then has to get right is making a new line look like it
-belongs, and a fixed policy cannot: a manifest that writes `key = value`
-and one that writes `key=value` should each get a line that matches.
-`teditfmt.infer(source)` answers the policy a document's own habits
-imply — counted across the file rather than sampled from the first
-pair — and `teditfmt.infer_confidence` says how much evidence there
-was, because a four-line file gives almost none and a tool previewing
-its edit should be able to say so.
-
-`teditfmt.manifest_policy()` is the deliberate opposite: `TeditAppend`
-and `TeditHeaderTable` pinned, so that a `novo.toml` whose
-`[dependencies]` happens to be alphabetical today does not start
-sorting itself, and one with no tables at all does not grow a brace.
-
-There is no `TeditPlacement` variant that sorts an existing table.
-Sorting is a whole-file rewrite wearing an insert's clothes.
-
-## The overlap with toml-nv, named
-
-toml-nv 0.0.3 ships a `tomledit` module with a `TomlEdit` type that
-preserves formatting. That overlap is real and this package does not
-pretend otherwise; the two are a **simple path and a complete one**,
-and the differences are checkable rather than a matter of taste:
-
-| | toml-nv `tomledit` | toml-edit-nv |
-| --- | --- | --- |
-| model | source text + spans, re-parsed per edit | item tree with decor |
-| `set` | yes | yes |
-| `insert` a key that is absent | appends at the end of its table, no policy | `TeditPlacement`, and creates the parent tables |
-| `rename` | — | yes |
-| a formatting policy for what is added | — | `TeditPolicy`, inferable from the document |
-| inline vs standard table | — | `retype`, refusing what would change meaning |
-| array of tables | — | `TeditArrayTable` |
-| what an edit changed | `is_unchanged`, a boolean | `edits`, the splice list |
-| `from_value` | refused, for a stated reason | under a policy, for the stated reason |
-
-**What should happen to toml-nv's `tomledit` is a question for its
-maintainers, and this lane did not answer it.** Both packages are
-interfaces; neither has a body. The defensible outcomes are that
-toml-nv's stays as the small path for a caller that only ever sets a
-value, or that it is dropped in favour of a `toml-edit-nv` dependency
-before either is implemented. What is *not* defensible is two
-implementations of decor preservation in one registry, and this README
-is where that is on the record.
-
-The name collision is already binding: `tomledit` and `TomlEdit` are
-toml-nv's, so this package's modules and types carry a `tedit` / `Tedit`
-prefix. `docs/publishing.md` § Public type names are globally unique is
-the rule, and it cost this package its most obvious names.
-
-## The direction of the dependency
-
-`teditconv` is the whole of it. A document can always answer a value
-and a value cannot answer a document, so toml-edit-nv depends on
-toml-nv and never the reverse.
-
-`teditconv.apply_value` is the call that earns the crossing: it writes
-a subtree into an existing document and touches only the entries whose
-values differ, so a config merged from a template produces a diff the
-size of the difference rather than the size of the file. Rendering the
-merged tree instead would have rewritten every byte.
-
-`replace_value` is the same call that also deletes what the tree does
-not carry, and it is a **separate name rather than a flag** — reading a
-`true` at a call site does not tell a reviewer that a config file's
-unmentioned half is about to go.
-
-## The layer, and why
-
-`core`. A document is a string the caller already holds, an edit is
-arithmetic over byte ranges into it, and rendering is a concatenation.
-Nothing is read, nothing is written, no clock is consulted.
-
-The one place a stream could have entered is writing an edited document
-out, and that is the effect-polymorphic shape:
-
-```novo ignore
-pub fn render_to<W: Write[e]>(w: W, d: TeditDoc) -> ?IoError [e]
-```
-
-The clause is `[e]`, bound by the caller's `Write` impl, so a file
-costs `[fs]`, a terminal costs `[io]` and an in-memory buffer costs
-nothing — and this package has spent none of them.
-`docs/publishing.md` § How a `core` package takes a stream from its
-host is the rule.
-
-Every edit answers a **new** document: `[mutate]` is a host effect and
-there is none here, which is also what makes `edits` meaningful,
-because the document before an edit is still a document and the two can
-be compared.
-
-## `@tier(embedded)` is not claimed
-
-Deliberately. A document holds its whole source text plus one item per
-entry, and the splice list grows with the edits — three heap
-structures whose size is the file's. A device that wanted to change one
-field of a configuration blob wants a different surface (find the key,
-overwrite in place, fixed capacity), not this one with an annotation on
-it. The honest form is the absence of the claim, and
-`docs/publishing.md`'s rule — a device claim is built, not asserted —
-means a claim made here would have to be kept by a package whose whole
-job is building lists.
-
-## The reference implementation
-
-`toml_edit` (Rust). The shape ported is its `Document` / `Item` /
-`Value` / `Table` / `InlineTable` / `ArrayOfTables` split, its `Decor`
-of prefix and suffix, and its `Formatted<T>` — a value that keeps its
-`repr` beside its meaning, which is why `0x2A`, `42` and `4_2` are one
-integer and three files here too. `toml_edit`'s own `RawString`, which
-is either a span into the original or an owned string, is `TeditRaw`.
-
-Two things are deliberately **not** ported. `toml_edit` mutates a
-document in place through `&mut`; this package answers a new document,
-because `[mutate]` is a host effect and `core` has none. And
-`toml_edit`'s `Document` derefs to its root table, which makes
-`doc["a"]["b"]` work and makes a missing key a panic; here the path is
-a value and a miss is a `Result`.
-
-The test vectors are `toml-test`'s valid and invalid corpora for the
-parse half, and `toml_edit`'s own `test_parse` / `test_edit` round-trip
-cases for the preservation half. The one vector this package adds is
-its own: `novo.toml`, edited, compared byte for byte outside the
-inserted line.
-
-## The consumers, and what adopting this would take
-
-**`novo pkg add`** (`compiler/bin/novo.ml`, `manifest_insert_dep`) is
-the first and the one the design was measured against. It is 40 lines
-that read the file into a line array, find the `[dependencies]` header,
-scan forward for the last non-blank line before the next header, and
-splice a string in. It exists in that shape because the whole-manifest
-re-serialiser it replaced (`manifest_to_string`) dropped `stability`,
-`category`, `tags`, `repository`, `maintainers`, `[docs.pages]` and
-every comment — and on an interface package the casualty was
-`stability = "draft"`, which the next `novo pkg publish` requires, so
-the publish was refused for a line the tool itself had deleted.
-
-`teditdoc.insert` with `teditfmt.manifest_policy()` is that function,
-and it gains three things the line scanner cannot have: it creates
-`[dependencies]` in the right place when the table is absent (the
-scanner appends a table at the end of the file whatever is there), it
-refuses a dependency that is already present instead of adding a second
-line for it, and it knows that a `#` inside a string is not a comment.
-
-**`manifest_key_pos`** — the function that answers `novo.toml:13:1` for
-a refusal — is `teditdoc.position_of`, and the difference is the same
-one: it scans lines for `^key`, so a key inside a `[docs.pages]` table
-with the same name as a `[package]` key answers the wrong line.
-
-**A dependency bot**, a lock-file writer and `novo pkg init --force`
-are the same call with a different policy.
-
-**config-nv** (planned, `tooling`/`host`) writes settings back to a
-file it did not create, which is `teditconv.apply_value` exactly.
-
-## What a row wanted to widen
-
-Nothing widened. Every function in this package is `[]` except
-`render_to`, whose row is its caller's.
-
-Three things the plan's row did not say, which this lane found:
-
-1. **The row's own job is partly already done.** toml-nv 0.0.3 ships a
-   `tomledit` module. The plan's note — "format-preserving edits, which
-   `novo pkg` needs" — reads as though nothing on the registry does
-   any of it. § The overlap with toml-nv above is the finding, and the
-   decision belongs to whoever owns both rows.
-2. **The name the row implies is taken.** `tomledit`, `TomlEdit`,
-   `TomlValue`, `TomlPair`, `TomlError`, `TomlType` and `TomlStyle` are
-   toml-nv's, so the obvious module and type names for this package
-   were unavailable before a line was written. The `tedit` prefix is
-   what is left, and it is in the manifest and the README rather than
-   discovered by a reader.
-3. **`novo pkg add`'s consumer is a pair, not a call.**
-   `manifest_insert_dep` and `manifest_key_pos` are the same file
-   scanned twice by two hand-written scanners, and only one of them is
-   in the plan's note. Adopting this package replaces both or neither.
-
-## The surface
-
-| module | `pub fn` | `pub struct` | `pub enum` |
-| --- | --- | --- | --- |
-| `tedititem` | 28 | 3 | 4 |
-| `teditkey` | 17 | 1 | 2 |
-| `teditfmt` | 10 | 1 | 3 |
-| `teditdoc` | 31 | 2 | 0 |
-| `tediterr` | 6 | 0 | 1 |
-| `teditconv` | 8 | 0 | 0 |
-| **total** | **100** | **7** | **10** (45 variants) |
-
-Two `impl Error` blocks, for `TeditError` and `TeditKeyError`.
+<!-- docs/writing-a-readme.md is the style guide for this page. -->

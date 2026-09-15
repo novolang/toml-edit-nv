@@ -1,6 +1,6 @@
 [package]
 name        = "toml-edit-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Format-preserving TOML editing: a document parsed into items that each remember the exact bytes they were written as, edited by dotted path with get, set, insert, remove and rename, and rendered back with every byte nobody touched identical.  The splice list an edit produced is a value, so `add one dependency line and move nothing else` is an assertion rather than a hope.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 

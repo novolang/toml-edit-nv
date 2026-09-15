@@ -5,6 +5,10 @@ All notable changes to toml-edit-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-11
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -48,3 +52,34 @@ The **interface**: every signature and every effect row, and no bodies.
 - One dependency, `toml-nv ^0.0.3`, for the value tree and nothing else.
 - The scaffold's `src/toml_edit.nv` was dropped: `toml_edit` is not a
   module name this package wants, and `tomledit` is toml-nv's.
+
+### Design notes
+
+- An item tree rather than source text with patched spans. Patching
+  spans answers `set` and cannot answer `insert` (there is no span to
+  patch and a policy has to be consulted), `rename` (two splices whose
+  offsets depend on each other) or creating a table that does not yet
+  exist (where "the right place" is a statement about the tree).
+- `from_value` exists although toml-nv's `tomledit` refuses the
+  direction. The argument for refusing holds for a package with no
+  formatting policy. Here the policy that generates a file is the same
+  value that governs every later edit, so a generated lock file or a
+  scaffolded manifest stays consistent with itself.
+- `replace_value` is a separate name rather than a flag on
+  `apply_value`. A `true` at a call site does not tell a reviewer that
+  a config file's unmentioned half is about to go.
+- Two things of `toml_edit`'s are deliberately not ported: mutation
+  through a mutable reference, because this package answers new
+  documents, and the `Document` deref that makes `doc["a"]["b"]` work
+  and a missing key a panic.
+- The overlap with toml-nv's `tomledit` is real and unresolved. Both
+  packages are interfaces with no bodies. The defensible outcomes are
+  that toml-nv's stays as the small path for a caller that only sets a
+  value, or that it is dropped in favour of a toml-edit-nv dependency
+  before either is implemented. Two implementations of decor
+  preservation in one registry is not defensible. The decision belongs
+  to whoever owns both.
+- `novo pkg add`'s consumer is a pair, not a call. `manifest_insert_dep`
+  and `manifest_key_pos` in the compiler scan the same file twice with
+  two hand-written scanners. `teditdoc.insert` and
+  `teditdoc.position_of` replace both or neither.
