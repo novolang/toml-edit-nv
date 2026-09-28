@@ -1,6 +1,6 @@
 [package]
 name        = "toml-edit-nv"
-version     = "0.0.2"
+version     = "0.0.3"
 description = "Format-preserving TOML editing: a document parsed into items that each remember the exact bytes they were written as, edited by dotted path with get, set, insert, remove and rename, and rendered back with every byte nobody touched identical.  The splice list an edit produced is a value, so `add one dependency line and move nothing else` is an assertion rather than a hope.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
@@ -48,4 +48,4 @@ novo        = ">= 0.8.9"
 # holding the same data with different comments are different files.
 # The direction of the dependency follows from that: a document can
 # always answer a value, and a value cannot answer a document.
-toml-nv = "^0.0.3"
+toml-nv = "^0.1.0"
